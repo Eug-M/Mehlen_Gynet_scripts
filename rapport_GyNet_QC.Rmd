@@ -1,0 +1,2461 @@
+---
+title: "GyNet QC - étude des données avant DESeq2"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Gynet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+# BiocManager::install("mixOmics")
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("DEGreport")
+library("apeglm")
+library("ggrepel")
+library("GGally")
+library("gridExtra")
+library("mixOmics")
+
+library("dplyr")
+library("ggplot2")
+library("factoextra")
+library("reshape2")
+library("tidyr")
+library("splines")
+library(reshape2)
+library(estimate)
+library(tibble)
+library(txdbmaker)
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier la QC sur les échantillons GyNet, avant recherche de gènes différentiellement exprimés via DESeq2.<br/>
+<br/>
+
+Analyse combinée des 168 samples, puis en séparant par indication : Endo (101 samples) et Cervix (67 samples).<br/>
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./coldata_GyNet.csv', sep=",")
+coldata$BMI <- coldata$Weight / (coldata$Height)^2
+coldata$HR <- ifelse(
+  coldata$Estrogen_endo == "0" & coldata$Progesterone_endo == "0",
+  "neg",
+  "pos"
+)
+# coldata <- subset( coldata, select = - c(xx, xx))
+
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns 
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+count_matrix <- as.matrix(counts_genes[, count_columns])
+
+# adding gene length to counts_genes
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+# collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- as.data.frame(sum(width(GenomicRanges::reduce(exons.list.per.gene))))
+match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
+counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
+
+# Working with gene symbols
+count_matrix_genesymbol <- count_matrix
+rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
+count_matrix_pcg_genesymbol <- count_matrix_pcg
+rownames(count_matrix_pcg_genesymbol) <- counts_genes[which(rownames(counts_genes) %in% rownames(count_matrix_pcg)), 'gene_name']
+# duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function)
+count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
+count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+
+coldata <- data.frame(coldata, row.names = count_columns)
+
+```
+
+<br/>
+<br/>
+Checkpoints: <br/>
+- nous obtenons `r sum(duplicated(rownames(count_matrix)))` gène(s) au nom dupliqué, sur un total de `r nrow(count_matrix)` protein-coding gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : `r sum(rownames(coldata) == colnames(count_matrix)) == length(rownames(coldata))`.<br/>
+
+
+## Analyses sur le jeu de données global (Endo + Cervix)
+
+```{r data overview}
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = coldata,
+  design = ~ Arm
+)
+
+dds <- DESeq(dds)
+norm.count_gynet <- as.data.frame(counts(dds, normalized=TRUE))
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main="DESeq2 dispersion plot")
+
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers (attribute 'Arm'): Cooks' distance")
+
+```
+
+### Purity scores
+
+```{r purity scores}
+
+# expressions for GSEA: normalised and divided by length
+dds_gene_symbol <- DESeqDataSetFromMatrix(
+  countData = count_matrix_genesymbol,
+  colData = coldata,
+  design = ~ Arm
+)
+dds_gene_symbol <- DESeq(dds_gene_symbol)
+norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+
+dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
+  countData = count_matrix_pcg_genesymbol,
+  colData = coldata,
+  design = ~ Arm
+)
+dds_pcg_gene_symbol <- DESeq(dds_pcg_gene_symbol)
+norm.count_pcg_genesymbol <- as.data.frame(counts(dds_pcg_gene_symbol, normalized=TRUE))
+norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_pcg_genesymbol)),'gene_length'])
+
+# write.table(norm.count_genesymbol_K,"./norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+# write.table(norm.count_pcg_genesymbol_K,"./norm.count_pcg_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+# /!\ il faut modifier le fichier pour décaler les noms de samples et ajouter "GeneSymbol" comme nom de la première colonne
+
+# Purity scores (package estimate)
+# GyNey_Expr <- system.file("extdata", "./count_matrix_genesymbol_pcg.tsv", package="estimate")
+estimate::filterCommonGenes(input.f = "./norm.count_pcg_genesymbol_K.tsv", output.f = "norm.count_pcg_genesymbol_K.gct", id="GeneSymbol")
+estimate::estimateScore("norm.count_pcg_genesymbol_K.gct", "OV_estimate_score_pcg.gct", platform = "illumina")
+# estimate::plotPurity(scores="OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
+
+# Plotting Estimate scores
+read_estimate_scores <- function(gct_file) {
+  
+  # Read GCT file (skip first 2 lines which are headers)
+  gct_data <- read.delim(gct_file, skip = 2, header = TRUE, row.names = 1)
+  
+  # The scores are typically in rows: StromalScore, ImmuneScore, ESTIMATEScore
+  # Transpose to get samples as rows
+  scores_df <- as.data.frame(t(gct_data[,which(colnames(gct_data) != "Description")]))
+  
+  # Clean up column names if needed
+  colnames(scores_df) <- gsub("\\.", "", colnames(scores_df))
+  
+  return(scores_df)
+}
+
+estimate_scores <- read_estimate_scores("OV_estimate_score_pcg.gct")
+
+# Calculate tumor purity using the formula from the ESTIMATE paper: Purity = cos(0.6049872018 + 0.0001467884 * ESTIMATE score)
+calculate_tumor_purity <- function(estimate_scores) {
+  
+  # Extract ESTIMATE score column
+  if ("ESTIMATEScore" %in% colnames(estimate_scores)) {
+    estimate_score <- as.numeric(estimate_scores$ESTIMATEScore)
+  } else if ("ESTIMATE.score" %in% colnames(estimate_scores)) {
+    estimate_score <- as.numeric(estimate_scores$ESTIMATE.score)
+  } else {
+    # Find column with "ESTIMATE" in name
+    estimate_col <- grep("ESTIMATE", colnames(estimate_scores), ignore.case = TRUE, value = TRUE)[1]
+    estimate_score <- as.numeric(estimate_scores[[estimate_col]])
+  }
+  
+  # Calculate purity
+  purity <- cos(0.6049872018 + 0.0001467884 * estimate_score)
+  
+  # Add to dataframe
+  estimate_scores$TumorPurity <- purity
+  
+  return(estimate_scores)
+}
+
+# Calculate purity
+estimate_scores <- calculate_tumor_purity(estimate_scores)
+estimate_scores <- estimate_scores %>%
+    rownames_to_column("Sample")
+# vérif que les samples sont dans le même ordre
+# sum(estimate_scores$Sample == rownames(coldata)) == length(estimate_scores$Sample)
+estimate_scores$Cohort <- case_when(
+  coldata$Indication == 'Endo' & coldata$Arm == 'A' ~ "Endo_A",
+  coldata$Indication == 'Endo' & coldata$Arm == 'B' ~ "Endo_B",
+  coldata$Indication == 'Endo' & coldata$Arm == 'C' ~ "Endo_C",
+  coldata$Indication == 'Endo' & coldata$Arm == 'D' ~ "Endo_D",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'A' ~ "Cervix_A",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'B' ~ "Cervix_B",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'C' ~ "Cervix_C",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'D' ~ "Cervix_D"
+)
+
+# # Plots 1
+# plot_estimate_scores <- function(scores_df) {
+#   
+#   # Prepare data for plotting
+#   scores_long <- scores_df %>%
+#     # rownames_to_column("Sample") %>%
+#     # select(Sample, StromalScore, ImmuneScore, ESTIMATEScore, TumorPurity) %>%
+#     pivot_longer(cols = -Sample, names_to = "Score_Type", values_to = "Score")
+#   
+#   # Separate purity from other scores (different scale)
+#   scores_plot <- scores_long %>% filter(Score_Type != "TumorPurity")
+#   purity_plot <- scores_long %>% filter(Score_Type == "TumorPurity")
+#   # purity_plot <- arrange(purity_plot, Score)
+#   
+#   # Bar plot of all three scores
+#   p1 <- ggplot(scores_plot, aes(x = reorder(Sample, Score), y = Score, fill = Score_Type)) +
+#     geom_bar(stat = "identity", position = "dodge") +
+#     labs(title = "ESTIMATE Scores by Sample",
+#          x = "Sample",
+#          y = "Score") +
+#     theme_minimal() +
+#     theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+#     scale_fill_brewer(palette = "Set2")
+#   
+#   print(p1)
+#   
+#   # Plot purity separately
+#   p2 <- ggplot(purity_plot, aes(x = reorder(Sample, Score), y = Score, col = Cohort)) +
+#     geom_bar(stat = "identity", fill = "steelblue") +
+#     labs(title = "Estimated Tumor Purity by Sample",
+#          x = "Sample",
+#          y = "Tumor Purity") +
+#     ylim(0, 1) +
+#     theme_minimal() +
+#     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#   
+#   print(p2)
+#   
+#   return(list(scores = p1, purity = p2))
+# }
+# 
+# # Create plots
+# plots <- plot_estimate_scores(estimate_scores)
+
+# Histogram of purity obtained per sample
+ggplot(estimate_scores, aes(x = reorder(Sample, TumorPurity), y = TumorPurity, fill = Cohort)) +
+    # geom_bar(stat = "identity") +
+    geom_col() +
+    labs(title = "Estimated Tumor Purity by Sample",
+         x = "Sample",
+         y = "Tumor Purity") +
+    ylim(0, 1) +
+    # theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Upper and lower bounds for 95% PI (approximate from paper)
+estimate_scores$Upper95 <- pmin(estimate_scores$TumorPurity + 0.1, 1)
+estimate_scores$Lower95 <- pmax(estimate_scores$TumorPurity - 0.1, 0)
+# # More sophisticated version with calculated prediction intervals
+# estimate_scores$Residual <- estimate_scores$TumorPurity - estimate_scores$PredictedPurity # it's the same!
+# residual_se <- sd(estimate_scores$Residual)
+# z_value <- qnorm((1 + 0.95) / 2)
+# pi_width <- z_value * residual_se
+# estimate_scores$Upper95 <- pmin(estimate_scores$PredictedPurity + pi_width, 1)
+# estimate_scores$Lower95 <- pmax(estimate_scores$PredictedPurity - pi_width, 0)
+
+# Create the plot
+p <- ggplot() +
+  # 95% prediction interval (grey shaded area)
+  geom_ribbon(data = estimate_scores,
+              aes(x = ESTIMATEScore, ymin = Lower95, ymax = Upper95),
+              fill = "grey80", alpha = 0.5) +
+  
+  # Prediction line (solid black)
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = TumorPurity),
+            color = "black", size = 1) +
+  
+  # Upper 95% PI dashed line
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = Upper95),
+            color = "grey50", linetype = "dashed", size = 0.8) +
+  
+  # Lower 95% PI dashed line
+  geom_line(data = estimate_scores,
+            aes(x = ESTIMATEScore, y = Lower95),
+            color = "grey50", linetype = "dashed", size = 0.8) +
+  
+  # Sample points (blue circles)
+  geom_point(data = estimate_scores,
+             aes(x = ESTIMATEScore, y = TumorPurity, label=Sample),
+             color = "blue", size = 2.5, alpha = 0.7) +
+             # geom_text(aes(label=Sample), hjust=0, vjust=0, check_overlap = TRUE, colour = "blue") +
+             # geom_text_repel(hjust="top", vjust="top") +
+             
+  # Labels and theme
+  labs(title = "Tumor Purity vs ESTIMATE Score",
+       x = "ESTIMATE Score",
+       y = "Tumor Purity") +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.2)) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 11),
+    panel.grid.major = element_line(color = "grey90", size = 0.3)
+  )
+
+print(p)
+
+#  plot corrélation purity et CT_perc
+lmp <- function (modelobject) {
+    if (class(modelobject) != "lm") stop("Not an object of class 'lm' ")
+    f <- summary(modelobject)$fstatistic
+    p <- pf(f[1],f[2],f[3],lower.tail=F)
+    attributes(p) <- NULL
+    return(p)
+}
+# pvalue <- paste("pvalue =", lmp(lm(Purity ~ CT_perc, coldata)))
+# r2 <- paste("R2 =", round(summary(lm(Purity ~ CT_perc, coldata))$r.squared, 2))
+lm_eqn <- function(df){
+    m <- lm(Purity ~ CT_perc, df);
+    eq <- substitute(italic(r)^2~"="~r2*","~~italic(p-value)~"="~pval, 
+         list(r2 = format(summary(m)$r.squared, digits = 2),
+              pval = format(lmp(m), digits=2)))
+    as.character(as.expression(eq));
+}
+
+ggplot(coldata, aes(x=CT_perc, y=Purity)) +
+    geom_point() +
+    geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
+    geom_text(x = 25, y = 1, label = lm_eqn(coldata), parse = TRUE)
+
+# PUREE score ???
+
+```
+
+### Déconvolution
+
+```{r deconvolution}
+
+# MCP-counter
+
+
+```
+
+
+### PCAs sur tous les protein-coding gènes : {.tabset}
+
+#### axis 1/2
+
+```{r PCA both all ax1-2 v1, fig.width=13, fig.height=10}
+
+# rld <- rlog(dds, blind=TRUE) # too slow for that many samples
+rld <- vst(dds, blind=TRUE)
+
+myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
+to_be_plotted <- c("SampleID", "Indication", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Purity", "Batch", "QC_uniq_aligned")
+nber_top_genes <- nrow(count_matrix)
+
+create_myPCAplots <- function(df, column, PCx, PCy, nber_top_genes) {
+  pcaData <- plotPCA(rld, intgroup=column, pcsToUse=c(PCx,PCy), returnData=TRUE, ntop=nber_top_genes) #, ntop=1000)
+  percentVar <- round(100 * attr(pcaData, "percentVar"))
+  percent_x <- paste0(percentVar[1], "%")
+  percent_y <- paste0(percentVar[2], "%")
+  x <- paste0('PC', PCx)
+  y <- paste0('PC', PCy)
+  if (column == 'SampleID') {
+    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group, label=rownames(df))) +
+    geom_point(size=3) +
+    ggtitle(column) +
+    # theme(plot.title = element_text(hjust=0.95, vjust=0.15, margin = margin(t = -20, b = 10, r = 5), size=11),
+    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
+    geom_text_repel(hjust="top", vjust="top") +
+    geom_density2d(alpha=.5) +
+    coord_fixed() 
+    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
+  }
+  else if (column %in% numeric_columns) {
+    sc_color <- scale_colour_gradientn(colours = myPalette(100), limits=c(min(df[,which(colnames(df) == column)]), max(df[,which(colnames(df) == column)])))
+    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group)) +
+    geom_point(size=3) +
+    ggtitle(column) +
+    # theme(plot.title = element_text(hjust=0.95, vjust=0.15, margin = margin(t = -20, b = 10, r = 5), size=11),
+    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
+    geom_density2d(alpha=.5) +
+    coord_fixed() +
+    sc_color
+    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
+  }
+  else {
+    pca_plot <- ggplot(pcaData, aes(.data[[x]], .data[[y]], color=group)) +
+    geom_point(size=3) +
+    ggtitle(column) +
+    theme(plot.title = element_text(margin = margin(t = 10, b = -20), size=11), legend.position="none", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank(), axis.title.y=element_blank(), axis.text.y=element_blank(), axis.ticks.y=element_blank(), plot.margin = unit(c(1, 1, 1, 1), "mm")) +
+    geom_density2d(alpha=.5) +
+    coord_fixed()
+    return(list("plot" = pca_plot, "PCx" = percent_x, "PCy" = percent_y))
+  }
+}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA both all ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA both all ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA both all ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA both all scree plot}
+
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA both all contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA both all top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+# loadings_df$gene_symbol <- counts_genes$gene_name[match(rownames(loadings_df), rownames(counts_genes))]
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+# ggplot(top_loadings_pc1, aes(x = gene_symbol, y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA both all biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 1500  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables associated to PC axis 
+```{r PCA both all top variables}
+
+# Function to assess variable contribution to PCs
+assess_variable_contribution <- function(rld, pca, ntop = 500, variables = NULL) {
+  
+  # If variables not specified, use all from colData
+  if (is.null(variables)) { variables <- colnames(colData(rld)) }
+  # # Calculate PCA # already done above, so added it to stdin
+  # rv <- rowVars(assay(rld))
+  # select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+  # pca <- prcomp(t(assay(rld)[select, ]))
+  # Get PC coordinates
+  pca_data <- data.frame(pca$x[, 1:2])
+  pca_data <- cbind(pca_data, colData(rld))
+  # Calculate variance explained
+  percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+    # For each variable, calculate correlation/association with PCs
+  results_list <- list()
+  
+  for (var in variables) {
+    # print(var)
+    # Skip if variable doesn't exist or has only one level
+    if (!var %in% colnames(pca_data)) next
+    var_data <- pca_data[[var]]
+    # Check if variable is numeric or categorical
+    if (is.numeric(var_data) && !is.factor(var_data)) {
+      next  # we want only the centered and reduced variables (factors)
+      # # For numeric: calculate correlation
+      # cor_pc1 <- cor(pca_data$PC1, var_data, use = "complete.obs")
+      # cor_pc2 <- cor(pca_data$PC2, var_data, use = "complete.obs")
+      # # R-squared as measure of variance explained
+      # r2_pc1 <- cor_pc1^2 * 100
+      # r2_pc2 <- cor_pc2^2 * 100
+    } else if (is.factor(var_data) && endsWith(var, '_cr')) {
+      var_data <- as.numeric(as.vector(pca_data[[var]]))
+      cor_pc1 <- cor(pca_data$PC1, var_data, use = "complete.obs")
+      cor_pc2 <- cor(pca_data$PC2, var_data, use = "complete.obs")
+      # R-squared as measure of variance explained
+      r2_pc1 <- cor_pc1^2 * 100
+      r2_pc2 <- cor_pc2^2 * 100
+    }
+    else {
+      # For categorical: ANOVA / calculate eta-squared
+      var_data <- as.factor(var_data)
+      # Skip if only one level
+      if (length(levels(var_data)) < 2) next
+      # ANOVA for PC1
+      aov_pc1 <- aov(pca_data$PC1 ~ var_data)
+      ss_total_pc1 <- sum((pca_data$PC1 - mean(pca_data$PC1))^2)
+      ss_var_pc1 <- sum(aov_pc1$residuals^2)
+      r2_pc1 <- (1 - ss_var_pc1/ss_total_pc1) * 100
+      # ANOVA for PC2
+      aov_pc2 <- aov(pca_data$PC2 ~ var_data)
+      ss_total_pc2 <- sum((pca_data$PC2 - mean(pca_data$PC2))^2)
+      ss_var_pc2 <- sum(aov_pc2$residuals^2)
+      r2_pc2 <- (1 - ss_var_pc2/ss_total_pc2) * 100
+    }
+    
+    results_list[[var]] <- data.frame(
+      variable = var,
+      PC1_variance_explained = r2_pc1,
+      PC2_variance_explained = r2_pc2
+    )
+  }
+  
+  # Combine results
+  contribution_df <- do.call(rbind, results_list)
+  rownames(contribution_df) <- NULL
+  # Sort by PC1 contribution
+  contribution_df <- contribution_df[order(contribution_df$PC1_variance_explained, 
+                                          decreasing = TRUE), ]
+  
+  return(list(
+    contribution = contribution_df,
+    percentVar = percentVar,
+    pca_data = pca_data
+  ))
+}
+
+# Use the function
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+
+#### Top variables contribution with PLS 
+```{r PCA both all top variables PLS}
+
+# Function to assess variable importance using PLS
+assess_variable_pls <- function(coldata, rld, ntop = 500, ncomp = 2) {
+  
+  # Get expression data
+  rv <- rowVars(assay(rld))
+  select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+  X <- t(assay(rld)[select, ])  # Samples x Genes
+  # Prepare Y matrix - convert categorical to dummy variables
+  Y_list <- list()
+  variable_names <- colnames(coldata)
+  
+  for (var in variable_names) {
+    var_data <- coldata[[var]]
+    # Skip if all NA
+    if (all(is.na(var_data))) next
+    # Skip if ID or equivalent # on ne peut pas prendre les classifications, qui sont déterminées directement sur les gènes présents dans le RNAseq (tourne en rond)
+    if (var == "SampleID" | var == "Date_traitement") next
+    if (is.numeric(var_data) && !is.factor(var_data)) {
+      next  # we want only the centered and reduced variables (factors)
+    } else if (is.factor(var_data) && endsWith(var, '_cr')) {
+      # Numeric variable - use as is (but centered and scaled)
+        Y_list[[var]] <- as.numeric(as.vector(var_data))
+    } else {
+      # Categorical - convert to dummy variables
+      var_factor <- as.factor(var_data)
+      if (length(levels(var_factor)) >= 2) {
+        # Create dummy variables (one-hot encoding)
+        dummy <- model.matrix(~ var_factor - 1)
+        colnames(dummy) <- paste0(var, "_", levels(var_factor))
+        Y_list[[var]] <- dummy
+      }
+    }
+    if (sum(is.na(var_data)) > 0) {
+      new_rows <- data.frame(matrix(NA, nrow = length(which(is.na(var_data))), ncol = ncol(Y_list[[var]])))
+      rownames(new_rows) <- which(is.na(var_data))
+      colnames(new_rows) <- colnames(Y_list[[var]])
+      Y_list[[var]] <- rbind(Y_list[[var]], new_rows)
+      Y_list[[var]] <- Y_list[[var]][order(as.numeric(rownames(Y_list[[var]]))), ]
+    }
+  }
+  
+  # Combine into Y matrix
+  Y <- do.call(cbind, Y_list)
+  
+  # Remove rows with NA
+  complete_cases <- complete.cases(X, Y)
+  X_clean <- X[complete_cases, ]
+  Y_clean <- Y[complete_cases, ]
+  
+  # Run PLS
+  pls_result <- pls(X_clean, Y_clean, ncomp = ncomp, mode = "regression")
+  
+  # Calculate variable importance for each component
+  importance_list <- list()
+  
+  for (comp in 1:ncomp) {
+    # Get loadings for Y variables
+    y_loadings <- pls_result$loadings$Y[, comp]
+    
+    # Calculate proportion of variance explained by each original variable
+    var_importance <- data.frame(
+      variable = character(),
+      loading = numeric(),
+      importance = numeric(),
+      stringsAsFactors = FALSE
+    )
+    
+    current_col <- 1
+    for (var in variable_names) {
+      if (var %in% names(Y_list)) {
+        n_cols <- ncol(as.matrix(Y_list[[var]]))
+        var_cols <- current_col:(current_col + n_cols - 1)
+        
+        # Sum of squared loadings for this variable
+        var_loading <- sum(y_loadings[var_cols]^2)
+        
+        var_importance <- rbind(var_importance, 
+                               data.frame(variable = var,
+                                        loading = sqrt(var_loading),
+                                        importance = var_loading * 100,
+                                        stringsAsFactors = FALSE))
+        
+        current_col <- current_col + n_cols
+      }
+    }
+    
+    importance_list[[paste0("Comp", comp)]] <- var_importance
+  }
+  
+  return(list(
+    pls_result = pls_result,
+    importance = importance_list,
+    var_explained = pls_result$prop_expl_var$X,
+    Y_matrix = Y_clean,
+    X_matrix = X_clean
+  ))
+}
+
+# Use the function
+pls_results <- assess_variable_pls(coldata, rld, ntop = nber_top_genes, ncomp = 2)
+
+
+# Plot variable importance for both first components
+plot_pls_importance <- function(pls_results) {
+  # Component 1
+  imp1 <- pls_results$importance$Comp1
+  # imp1 <- imp1[order(imp1$importance, decreasing = TRUE), ]
+  imp1$component <- "Component 1"
+    # Component 2
+  imp2 <- pls_results$importance$Comp2
+  # imp2 <- imp2[order(imp2$importance, decreasing = TRUE), ]
+  imp2$component <- "Component 2"
+  
+  imp_combined <- rbind(imp1, imp2)
+  
+  ggplot(imp_combined, aes(x = reorder(variable, importance), y = importance, fill = component)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    coord_flip() +
+    scale_fill_manual(values = c("Component 1" = "steelblue", 
+                                  "Component 2" = "coral")) +
+    labs(title = "Variable Importance - PLS Components 1 and 2",
+         x = "Variable",
+         y = "Importance (%)",
+         fill = "Component") +
+    theme_minimal()+
+    theme(legend.position = "top")
+  
+}
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+
+### PCAs sur les gènes les plus variants : {.tabset}
+
+#### choosing optimal number of top variable genes
+```{r PCA both variants optimal ntop}
+
+# Function to calculate variance explained by top N genes
+calculate_variance_by_ngenes <- function(rld, gene_numbers = seq(100, 2000, by = 100)) {
+  
+  # Get all gene variances
+  rv <- rowVars(assay(rld))
+  results <- data.frame(
+    n_genes = integer(),
+    variance_explained = numeric()
+  )
+  
+  for (n in gene_numbers) {
+    # Select top n genes
+    select <- order(rv, decreasing = TRUE)[seq_len(min(n, length(rv)))]
+    # Run PCA on these genes
+    pca <- prcomp(t(assay(rld)[select, ]))
+    # Calculate total variance explained by first 2 PCs
+    percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+    total_var_pc1_pc2 <- sum(percentVar[1:2])
+    # Or you can use variance explained by all PCs (should be close to 100%)
+    # For selection, typically we care about PC1+PC2
+    
+    results <- rbind(results, data.frame(
+      n_genes = n,
+      variance_explained = total_var_pc1_pc2
+    ))
+  }
+  return(results)
+}
+
+# Calculate for different gene numbers
+gene_numbers <- c(seq(100, 1000, by = 100), seq(1500, 3000, by = 500))
+variance_results <- calculate_variance_by_ngenes(rld, gene_numbers)
+
+# Plot
+ggplot(variance_results, aes(x = n_genes, y = variance_explained)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Variance Explained (PC1+PC2) vs Number of Top Variable Genes",
+       x = "Number of Top Variable Genes",
+       y = "Variance Explained by PC1+PC2 (%)") +
+  theme_minimal() +
+  geom_vline(xintercept = 500, linetype = "dashed", color = "gray") +
+  annotate("text", x = 500, y = min(variance_results$variance_explained), 
+           label = "Default: 500", vjust = -1)
+
+# Find the "elbow" point
+#print(variance_results)
+
+```
+
+On peut choisir 600 gènes, c'est là où la pente de la courbe commence à être moins forte (méthode elbow). 
+
+<br/>
+<br/>
+
+#### axis 1/2
+
+```{r PCA both variants ax1-2 v1, fig.width=13, fig.height=10}
+
+nber_top_genes <- 600
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA both variants ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA both variants ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA both variants ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA both variants scree plot}
+
+# Calculate PCA of most variant genes
+rv <- rowVars(assay(rld))
+select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
+pca <- prcomp(t(assay(rld)[select, ]))
+
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA both variants contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA both variants top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA both variants biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 400  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution to PC variance 
+```{r PCA both variants top variables}
+
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution with PLS 
+```{r PCA both variants top variables PLS}
+
+pls_results <- assess_variable_pls(coldata, rld, ntop = nber_top_genes, ncomp = 2)
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+### Hierarchical Clustering Heatmaps :  {.tabset}
+
+#### Sur tous les protein-coding gènes
+
+```{r heatmaps both all genes}
+
+rld_mat <- assay(rld)
+
+# rld_cor_p <- cor(rld_mat)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat[,1:4])
+
+# Autre méthode pour plotter les Hierarchical clustering, donne des résultats différents (https://github.com/hamidghaedi/RNA-seq-differential-expression) :
+# sampleDists <- dist(t(rld_mat))
+# sampleDistMatrix <- as.matrix(sampleDists)
+# rownames(sampleDistMatrix) <- colnames(rld_mat)
+# colnames(sampleDistMatrix) <- NULL
+# colors <- colorRampPalette( rev(brewer.pal(9, "Blues")) )(255)
+# pheatmap(sampleDistMatrix,
+#           clustering_distance_rows=sampleDists,
+#           clustering_distance_cols=sampleDists,
+#           col=colors)
+
+```
+
+<br/>
+<br/>
+
+#### sur les gènes les plus variants
+
+```{r heatmaps both variant genes}
+
+rld_mat_500 <- assay(rld)[select, ]
+
+# rld_cor_p <- cor(rld_mat_500)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat_500, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat_500[,1:4])
+
+```
+
+
+
+
+
+
+## Analyses sur le jeu de données Endo
+
+```{r data overview Endo}
+
+coldata_Endo <- coldata[which(coldata$Indication == "Endo"),]
+coldata_Endo <- subset( coldata_Endo, select = -c(Indication, HPV_all, HPV16) ) # colonne qui ne prend qu'une valeur et colonnes de Cervix
+count_matrix_Endo <- count_matrix[, which(coldata$Indication == "Endo")]
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_Endo,
+  colData = coldata_Endo,
+  design = ~ Arm
+)
+
+dds <- DESeq(dds)
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main="DESeq2 dispersion plot")
+
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers (attribute 'Arm'): Cooks' distance")
+# Cook’s distance is a measure of how much a single sample is influencing the fitted coefficients for a gene, and a large value of Cook’s distance is intended to indicate an outlier count
+
+```
+
+### PCAs sur tous les protein-coding gènes : {.tabset}
+
+#### axis 1/2
+
+```{r PCA Endo all ax1-2 v1, fig.width=13, fig.height=10}
+
+rld <- vst(dds, blind=TRUE)
+
+nber_top_genes <- nrow(count_matrix_Endo)
+to_be_plotted <- c("SampleID", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Batch", "ecog", "QC_uniq_aligned", "Purity")
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA Endo all ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA Endo all ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA Endo all ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA Endo all scree plot}
+
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA Endo all contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA Endo all top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+# loadings_df$gene_symbol <- counts_genes$gene_name[match(rownames(loadings_df), rownames(counts_genes))]
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+# ggplot(top_loadings_pc1, aes(x = gene_symbol, y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA Endo all biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 1500  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables associated to PC axis 
+```{r PCA Endo all top variables}
+
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+
+#### Top variables contribution with PLS 
+```{r PCA Endo all top variables PLS}
+
+pls_results <- assess_variable_pls(coldata_Endo, rld, ntop = nber_top_genes, ncomp = 2)
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+
+### PCAs sur les gènes les plus variants : {.tabset}
+
+#### choosing optimal number of top variable genes
+```{r PCA Endo variants optimal ntop}
+
+# Calculate for different gene numbers
+variance_results <- calculate_variance_by_ngenes(rld, gene_numbers)
+
+# Plot
+ggplot(variance_results, aes(x = n_genes, y = variance_explained)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Variance Explained (PC1+PC2) vs Number of Top Variable Genes",
+       x = "Number of Top Variable Genes",
+       y = "Variance Explained by PC1+PC2 (%)") +
+  theme_minimal() +
+  geom_vline(xintercept = 500, linetype = "dashed", color = "gray") +
+  annotate("text", x = 500, y = min(variance_results$variance_explained), 
+           label = "Default: 500", vjust = -1)
+
+# Find the "elbow" point
+#print(variance_results)
+
+```
+
+Bien que la courbe ait une forme particulière, on peut choisir 1000 gènes (méthode elbow). 
+
+<br/>
+<br/>
+
+#### axis 1/2
+
+```{r PCA Endo variants ax1-2 v1, fig.width=13, fig.height=10}
+
+nber_top_genes <- 1000
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA Endo variants ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA Endo variants ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA Endo variants ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Endo, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA Endo variants scree plot}
+
+# Calculate PCA of most variant genes
+rv <- rowVars(assay(rld))
+select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
+pca <- prcomp(t(assay(rld)[select, ]))
+
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA Endo variants contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA Endo variants top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA Endo variants biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 400  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution to PC variance 
+```{r PCA Endo variants top variables}
+
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution with PLS 
+```{r PCA Endo variants top variables PLS}
+
+pls_results <- assess_variable_pls(coldata_Endo, rld, ntop = nber_top_genes, ncomp = 2)
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+### Hierarchical Clustering Heatmaps :  {.tabset}
+
+#### Sur tous les protein-coding gènes
+
+```{r heatmaps Endo all genes}
+
+rld_mat <- assay(rld)
+
+# rld_cor_p <- cor(rld_mat)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat[,1:4])
+
+```
+
+<br/>
+<br/>
+
+#### sur les gènes les plus variants
+
+```{r heatmaps Endo variant genes}
+
+rld_mat_500 <- assay(rld)[select, ]
+
+# rld_cor_p <- cor(rld_mat_500)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat_500, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat_500[,1:4])
+
+```
+
+
+
+
+
+## Analyses sur le jeu de données Cervix
+
+```{r data overview Cervix}
+
+coldata_Cervix <- coldata[which(coldata$Indication == "Cervix"),]
+coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+count_matrix_Cervix <- count_matrix[, which(coldata$Indication == "Cervix")]
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_Cervix,
+  colData = coldata_Cervix,
+  design = ~ Arm
+)
+
+dds <- DESeq(dds)
+
+# checking the DESeq2 dispersion 
+plotDispEsts(dds, main="DESeq2 dispersion plot")
+
+# looking at the number of outliers
+boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers (attribute 'Arm'): Cooks' distance")
+
+```
+
+### PCAs sur tous les protein-coding gènes : {.tabset}
+
+#### axis 1/2
+
+```{r PCA Cervix all ax1-2 v1, fig.width=13, fig.height=10}
+
+rld <- vst(dds, blind=TRUE)
+
+nber_top_genes <- nrow(count_matrix_Cervix)
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA Cervix all ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA Cervix all ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA Cervix all ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA Cervix all scree plot}
+
+rld_mat <- assay(rld)
+pca <- prcomp(t(rld_mat))
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA Cervix all contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA Cervix all top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+# loadings_df$gene_symbol <- counts_genes$gene_name[match(rownames(loadings_df), rownames(counts_genes))]
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+# ggplot(top_loadings_pc1, aes(x = gene_symbol, y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA Cervix all biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 1500  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables associated to PC axis 
+```{r PCA Cervix all top variables}
+
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+
+#### Top variables contribution with PLS 
+```{r PCA Cervix all top variables PLS}
+
+pls_results <- assess_variable_pls(coldata_Cervix, rld, ntop = nber_top_genes, ncomp = 2)
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+
+### PCAs sur les gènes les plus variants : {.tabset}
+
+#### choosing optimal number of top variable genes
+```{r PCA Cervix variants optimal ntop}
+
+# Calculate for different gene numbers
+variance_results <- calculate_variance_by_ngenes(rld, gene_numbers)
+
+# Plot
+ggplot(variance_results, aes(x = n_genes, y = variance_explained)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Variance Explained (PC1+PC2) vs Number of Top Variable Genes",
+       x = "Number of Top Variable Genes",
+       y = "Variance Explained by PC1+PC2 (%)") +
+  theme_minimal() +
+  geom_vline(xintercept = 500, linetype = "dashed", color = "gray") +
+  annotate("text", x = 500, y = min(variance_results$variance_explained), 
+           label = "Default: 500", vjust = -1)
+
+# Find the "elbow" point
+#print(variance_results)
+
+```
+
+On peut choisir 800 gènes, c'est là où la pente de la courbe commence à être moins forte (méthode elbow). 
+
+<br/>
+<br/>
+
+#### axis 1/2
+
+```{r PCA Cervix variants ax1-2 v1, fig.width=13, fig.height=10}
+
+nber_top_genes <- 800
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 2, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/3
+```{r PCA Cervix variants ax1-3 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 3, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/4
+```{r PCA Cervix variants ax1-4 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 4, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### axis 1/5
+```{r PCA Cervix variants ax1-5 v1, fig.width=13, fig.height=10}
+
+plot_list <- list()
+for (column in to_be_plotted) {
+  newlist <- create_myPCAplots(coldata_Cervix, column, 1, 5, nber_top_genes)
+  plot_list[[column]] <- newlist$plot
+  perc_expliq_x <- newlist$PCx
+  perc_expliq_y <- newlist$PCy
+}
+grid.arrange(grobs = plot_list, ncol = 4, nrow = 4)
+
+```
+
+% de variance expliquée : axe des X : `r perc_expliq_x`, axe des Y : `r perc_expliq_y`<br/>
+Légende pour les variables quantitatives : bleu foncé = valeur min, rouge foncé = valeur max, jaune = milieu
+
+<br/>
+<br/>
+
+#### scree plot
+```{r PCA Cervix variants scree plot}
+
+# Calculate PCA of most variant genes
+rv <- rowVars(assay(rld))
+select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
+pca <- prcomp(t(assay(rld)[select, ]))
+
+fviz_eig(pca)
+
+```
+
+<br/>
+<br/>
+
+#### contributions of individual samples to PCs 1-6
+```{r PCA Cervix variants contribution of samples}
+
+plot_list <- list()
+for (axe in 1:6) {
+  plot_list[[axe]] <- fviz_contrib(pca, choice = "ind", axes = axe, ggtheme = theme_minimal() + theme(axis.text.x=element_text(size=8, angle=45)) )
+}
+grid.arrange(grobs = plot_list, ncol=2, nrow=3)
+
+```
+
+<br/>
+<br/>
+
+#### top genes contributing to PC variance
+```{r PCA Cervix variants top genes for PC1}
+
+loadings <- pca$rotation
+loadings_df <- data.frame(
+  gene = rownames(loadings),
+  PC1 = loadings[, "PC1"],
+  PC2 = loadings[, "PC2"]
+)
+top_n <- 30
+
+# Plot PC1 loadings
+top_loadings_pc1 <- loadings_df[order(abs(loadings_df$PC1), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc1, aes(x = reorder(gene, abs(PC1)), y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC1",
+       x = "Gene",
+       y = "PC1 Loading") +
+  theme_minimal()
+
+# Plot PC2 loadings
+top_loadings_pc2 <- loadings_df[order(abs(loadings_df$PC2), decreasing = TRUE)[1:top_n], ]
+ggplot(top_loadings_pc2, aes(x = reorder(gene, abs(PC2)), y = PC2)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 30 Genes Contributing to PC2",
+       x = "Gene",
+       y = "PC2 Loading") +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Biplots 
+```{r PCA Cervix variants biplots}
+
+# Overall biplot
+fviz_pca_biplot(pca)
+
+# Get sample coordinates
+pca_data <- data.frame(
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  sample = colnames(rld)
+)
+
+# Calculate variance explained by each PC
+percentVar <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+# Get top gene loadings (scale for visualization)
+top_genes <- 30
+loading_scale <- 400  # Adjust this to scale arrows appropriately
+
+top_loading_idx <- order(rowSums(abs(loadings[, 1:2])), decreasing = TRUE)[1:top_genes]
+gene_loadings <- data.frame(
+  PC1 = loadings[top_loading_idx, "PC1"] * loading_scale,
+  PC2 = loadings[top_loading_idx, "PC2"] * loading_scale,
+  gene = rownames(loadings)[top_loading_idx]
+)
+gene_loadings$gene_symbol <- counts_genes$gene_name[match(rownames(gene_loadings), rownames(counts_genes))]
+
+# Create biplot
+ggplot() +
+  geom_point(data = pca_data, aes(x = PC1, y = PC2), size = 3, color = "blue") +
+  geom_segment(data = gene_loadings, 
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")), 
+               color = "red", alpha = 0.7) +
+  geom_text(data = gene_loadings, 
+            aes(x = PC1, y = PC2, label = gene_symbol),
+            size = 3, vjust = -0.5, hjust = 0.5) +
+  labs(title = "PCA Biplot - Samples and Top Contributing Genes",
+       x = paste0("PC1 (", round(percentVar[1], 1), "%)"),
+       y = paste0("PC2 (", round(percentVar[2], 1), "%)")) +
+  theme_minimal()
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution to PC variance 
+```{r PCA Cervix variants top variables}
+
+var_contribution <- assess_variable_contribution(rld, pca, ntop = nber_top_genes)
+
+# Plot the 2 PCs combined
+contribution_long <- melt(var_contribution$contribution,
+                         id.vars = "variable",
+                         variable.name = "PC",
+                         value.name = "variance_explained")
+
+contribution_long$PC <- gsub("PC1_variance_explained", "PC1", contribution_long$PC)
+contribution_long$PC <- gsub("PC2_variance_explained", "PC2", contribution_long$PC)
+# Plot both PCs together
+ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
+                              y = variance_explained,
+                              fill = PC)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("PC1" = "steelblue", "PC2" = "coral")) +
+  labs(title = "Variable Contributions to PC1 and PC2",
+       x = "Variable",
+       y = "Variance Explained (%)") +
+  theme_minimal() +
+  theme(legend.position = "top")
+
+```
+
+<br/>
+<br/>
+
+#### Top variables contribution with PLS 
+```{r PCA Cervix variants top variables PLS}
+
+pls_results <- assess_variable_pls(coldata_Cervix, rld, ntop = nber_top_genes, ncomp = 2)
+
+plot_pls_importance(pls_results)
+
+```
+
+<br/>
+<br/>
+
+
+### Hierarchical Clustering Heatmaps :  {.tabset}
+
+#### Sur tous les protein-coding gènes
+
+```{r heatmaps Cervix all genes}
+
+rld_mat <- assay(rld)
+
+# rld_cor_p <- cor(rld_mat)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat[,1:4])
+
+```
+
+<br/>
+<br/>
+
+#### sur les gènes les plus variants
+
+```{r heatmaps Cervix variant genes}
+
+rld_mat_500 <- assay(rld)[select, ]
+
+# rld_cor_p <- cor(rld_mat_500)
+# pheatmap(rld_cor_p, main="pairwise Pearson correlations")
+
+rld_cor_s <- cor(rld_mat_500, method="spearman")
+pheatmap(rld_cor_s, main="pairwise Spearman correlations")
+
+ggpairs(rld_mat_500[,1:4])
+
+```
+
+
+
+
+
+# Conclusions et remarques 
+
+L'indication sépare bien les échantillons (premier axe de l'ACP), ce qui est logique vu qu'il ne s'agit pas du même cancer : à bien séparer pour les DEGs<br/>
+- pour Endo : les variables spécifiques à l'Endo (Progesteron et Estrogen) sont les meilleures en PLS<br/>
+- pour Cervix : l'ecog est le meilleur prédicteur en PLS, à valider avec les LRT<br/>
+- pour les deux : le Site de prélèvement est haut en PLS, ce qui est logique vu qu'il ne s'agit pas du même tissu<br/>
+<br/>
+Le choix du design sera finalisé avec l'étude des LRT.<br/>
+<br/>
+Il ne semble pas y avoir d'échantillon outlier : on peut tous les conserver.
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

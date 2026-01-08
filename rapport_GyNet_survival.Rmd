@@ -1,0 +1,1346 @@
+---
+title: "GyNet Survival - étude de la survie selon l'expression des gènes d'intérêts"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Gynet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies, results = "hide", include=F}
+
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library(gridExtra)
+library("tidyverse")
+library("viridis")
+library('survival')
+library(ranger)
+library(ggfortify)
+library(survminer)
+library(KMEANS.KNN)
+library(factoextra)
+library(GSVA)
+library(gplots)
+library("DESeq2")
+library(ggrepel)
+library(AnnotationDbi) 
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+library(parameters)
+library(txdbmaker)
+library("rtracklayer")
+library("ComplexHeatmap")
+library(circlize)
+```
+
+# Objectif
+
+Etudier le lien entre les niveaux d'expression de la Netrin1 et ses récepteurs principaux, et la survie sur les données GyNet.<br/>
+<br/>
+Cet essai comporte 168 patients, dont 101 pour un cancer de l'endomètre et 67 pour un cancer du cervix. Les deux groupes ont été séparés en 4 bras randomisés : <br/>
+- bras  A (chimiothérapie seule) : traités au Carboplatin & Paclitaxel ;<br/>
+- bras B (chimiothérapie + NP137) : traités au NP137 & Carboplatin & Paclitaxel ;<br/>
+- bras C (immunothérapie + NP137) : traités au NP137 & Pembrolizumab ;<br/>
+- bras D (chimiothérapie + immunothérapie + NP137) : traités au NP137 & Pembrolizumab & Carboplatin & Paclitaxel.<br/>
+<br/>
+
+
+# Jeu de données
+
+## Exploratory Data Analysis
+
+```{r creation tableau donnees cliniques}
+
+# creation du premier coldata_GyNet.csv
+# clinic_raw <- read.csv('/home/eugenie-modolo/Documents/Gynet/resultats_cliniques.csv', sep=";")
+# # clinic_raw$SampleID <- clinic_raw$SUBJID
+# clinic_raw$SampleID <- paste0("S", sub("-", "_", clinic_raw$SUBJID))
+# clinic_raw$Indication <- case_when(
+#   clinic_raw$XICOHORT == "1" ~ "Endo",
+#   clinic_raw$XICOHORT == "2" ~ "Cervix", 
+#   TRUE ~ NA_character_  # for any unexpected values
+# )
+# clinic_raw$Arm <- sub("ARM ", "", clinic_raw$XIARM_NAME)
+# clinic_raw$Arm <- sub(".:.*", "", clinic_raw$Arm)
+# clinic_raw$Age <- clinic_raw$XIAGE
+# clinic_raw$Weight <- clinic_raw$poids
+# clinic_raw$Height <- clinic_raw$taille
+# clinic_raw$Cycles_NP137 <- clinic_raw$total_cycle_NP137
+# clinic_raw$Cycles_carboplatin <- clinic_raw$total_cycle_carbo
+# clinic_raw$Cycles_paclitaxel <- clinic_raw$total_cycle_Pacli
+# clinic_raw$Cycles_pembrolizumab <- clinic_raw$total_cycle_Pembro
+# clinic_raw$Nber_Prior_chemo <- clinic_raw$XI9
+# clinic_raw$Mut_Status_endo <- clinic_raw$XI10
+# clinic_raw$Estrogen_endo <- clinic_raw$XA6
+# clinic_raw$Progesterone_endo <- clinic_raw$XA7
+# clinic_raw$Date_traitement <- as.Date(clinic_raw$C1d1, format= "%d/%m/%Y")
+# # clinic_raw$Death_status <- case_when(
+# #   clinic_raw$Dc_Date == "" ~ "0",
+# #   clinic_raw$Dc_Date != "" ~ "1", 
+# #   TRUE ~ NA_character_  # for any unexpected values
+# # )
+# # clinic_raw$Prog_status <- ifelse(
+# #   clinic_raw$EOS_Reason == "Death" | clinic_raw$EOS_Reason == "Disease progression",
+# #   "1", "0"
+# # )
+# clinic_raw$Dc_Date <- as.Date(clinic_raw$Dc_Date, format= "%d/%m/%Y")
+# clinic_raw$EOS_Date <- as.Date(clinic_raw$EOS_Date, format= "%d/%m/%Y")
+# # clinic_raw$OS <- ifelse(
+# #   clinic_raw$Death_status == "1",
+# #   as.numeric(clinic_raw$Dc_Date - clinic_raw$Date_traitement),
+# #   as.numeric(clinic_raw$EOS_Date - clinic_raw$Date_traitement)
+# # )
+# # clinic_raw$PFS <- ifelse(
+# #   clinic_raw$Prog_status == "1",
+# #   as.numeric(clinic_raw$Dc_Date - clinic_raw$Date_traitement),
+# #   as.numeric(clinic_raw$EOS_Date - clinic_raw$Date_traitement)
+# # )
+# clinic_raw$Death_status <- clinic_raw$dc
+# clinic_raw$Prog_status <- clinic_raw$evt_pfs
+# clinic_raw$OS <- clinic_raw$del_os
+# clinic_raw$PFS <- clinic_raw$del_pfs
+# clinic_raw$best_response <- case_when(
+#   clinic_raw$bor == "1" ~ "CR",
+#   clinic_raw$bor == "2" ~ "PR",
+#   clinic_raw$bor == "4" ~ "SD",
+#   clinic_raw$bor == "5" ~ "PD",
+#   clinic_raw$bor == "98" ~ "NE",
+#   clinic_raw$bor == "99" ~ "NE"
+#   ) # j'ai modifié après-coup les 2 valeurs à NE, car elles avaient quelque chose dans la colonne "best reponse"
+# 
+# samplesheet <- read.csv('/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore/samplesheet_GyNet.csv', sep=",")
+# # samplesheet$SampleID <- sub("S", "", samplesheet$sample)
+# # samplesheet$SampleID <- sub("_", "-", samplesheet$SampleID)
+# coldata_gynet <- clinic_raw[match(samplesheet$sample, clinic_raw$SampleID), c("SampleID", "Indication", "Arm", "Age", "Weight", "Height", "Date_traitement", "Death_status", "OS", "Prog_status", "PFS", "best_response", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Nber_Prior_chemo", "Mut_Status_endo", "ecog", "Estrogen_endo", "Progesterone_endo")]
+# coldata_gynet = coldata_gynet[order(coldata_gynet$SampleID), ]
+# 
+# # Saving coldata_gynet for further reports
+# # write.csv(coldata_gynet,"./coldata_GyNet.csv", row.names = F)
+
+coldata_gynet <- read.csv('./coldata_GyNet.csv', sep=",")
+coldata_gynet$BMI <- coldata_gynet$Weight / (coldata_gynet$Height)^2
+coldata_gynet$HR <- ifelse(
+  coldata_gynet$Estrogen_endo == "0" & coldata_gynet$Progesterone_endo == "0",
+  "neg",
+  "pos"
+)
+
+ggplot(coldata_gynet, 
+     aes(x=Age, col=Indication, fill=Indication)) + 
+     geom_histogram(position="identity", alpha=0.5) +
+     ggtitle("Age of sampled patients")
+
+ggplot(coldata_gynet, 
+     aes(x=Nber_Prior_chemo, fill=Arm)) + 
+     geom_bar(position = "fill") +
+     ggtitle("Number of prior chemotherapies per sampled patients")
+
+level_order <- c('D', 'C', 'B', 'A')
+ggplot(coldata_gynet, 
+     aes(x=Cycles_NP137, y=factor(Arm, level=level_order), fill=Arm)) + 
+     geom_boxplot(notch = TRUE) +
+     scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+     geom_jitter(color="black", size=0.4, alpha=0.9) +
+     ggtitle("Number of cycles of NP137 received") + ylab("Arm") + theme(legend.position="none")
+
+```
+
+## Expression des gènes d'intérêt {.tabset}
+
+```{r donnees cliniques GyNet et expression des genes d interet, results='asis', echo=FALSE}
+
+## Ancienne méthode, fausse (pas divisé par taille du gène, genesymbol remplacés par ENSG pas pris en compte dans ssGSEA)
+
+# counts_genes_gynet <- read.table("/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+#                      header = TRUE, 
+#                      row.names = 1, 
+#                      sep = "\t",
+#                      check.names = FALSE)
+# 
+# count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name"]
+# # besoin de prendre les integers pour DESeq2
+# counts_genes_gynet[count_columns] <- round(counts_genes_gynet[count_columns])
+# count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
+# # rownames(count_matrix_gynet) <- counts_genes_gynet$gene_name  # Gene names become row names
+# 
+# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne
+# dup_genes <- counts_genes_gynet[duplicated(counts_genes_gynet$gene_name),'gene_name']
+# counts_genes_gynet$feature <- ifelse((is.na(counts_genes_gynet$gene_name) | counts_genes_gynet$gene_name %in% dup_genes), rownames(counts_genes_gynet), counts_genes_gynet$gene_name)
+# count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name" & colnames(counts_genes_gynet) != "feature"]
+# count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
+# rownames(count_matrix_gynet) <- counts_genes_gynet$feature
+# 
+# # normalisation des counts par DESeq2
+# dds_gynet <- DESeqDataSetFromMatrix(
+#   countData = count_matrix_gynet,
+#   colData = coldata_gynet,
+#   design = ~ Arm
+# )
+# dds_gynet <- DESeq(dds_gynet)
+# norm.count_gynet <- as.data.frame(counts(dds_gynet, normalized=TRUE))
+
+
+
+
+
+
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+count_matrix <- as.matrix(counts_genes[, count_columns])
+
+coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
+
+# adding gene length to counts_genes
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+# collect the exons per gene id
+exons.list.per.gene <- exonsBy(txdb,by="gene")
+# then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
+exonic.gene.sizes <- as.data.frame(sum(width(GenomicRanges::reduce(exons.list.per.gene))))
+match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
+counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
+
+# Working with gene symbols
+count_matrix_genesymbol <- count_matrix
+rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
+count_matrix_pcg_genesymbol <- count_matrix_pcg
+rownames(count_matrix_pcg_genesymbol) <- counts_genes[which(rownames(counts_genes) %in% rownames(count_matrix_pcg)), 'gene_name']
+# duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function ...)
+count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
+count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix,
+  colData = coldata_gynet,
+  design = ~ Arm
+)
+dds <- DESeq(dds)
+norm.count_gynet <- as.data.frame(counts(dds, normalized=TRUE))
+
+# expressions for GSEA: normalised and divided by length
+dds_gene_symbol <- DESeqDataSetFromMatrix(
+  countData = count_matrix_genesymbol,
+  colData = coldata_gynet,
+  design = ~ Arm
+)
+dds_gene_symbol <- DESeq(dds_gene_symbol)
+norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+
+genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent 
+expression_genes <- norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% genes_of_interest),]
+t_expression_genes <- data.frame(t(expression_genes))
+for (gene in genes_of_interest) {
+  coldata_gynet[[gene]] <- t_expression_genes[[gene]]
+  coldata_gynet[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+}
+
+res1 <- sum(duplicated(rownames(count_matrix)))
+res2 <- nrow(count_matrix)
+res3 <- sum(rownames(coldata_gynet) == colnames(count_matrix)) == length(rownames(coldata_gynet))
+cat(
+'Checkpoints: <br/>
+- nous obtenons ', res1, ' gènes au nom dupliqués, sur un total de ', res2, ' gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : ', res3, '.<br/>')
+
+# draw coldata_gynet table
+as.matrix(coldata_gynet) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(coldata_gynet),fontSize = '80%')
+
+# draw histograms for each gene of interest
+create_gene_histograms <- function(gene_name, df1) {
+  gene_log <- paste0(gene_name, "_log")
+  
+  p1 <- ggplot(df1, aes(x = .data[[gene_log]])) + 
+    geom_histogram() +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0("log2(", gene_name, "+1) GyNet"))
+  
+  p2 <- ggplot(df1, aes(x = .data[[gene_log]], col=Indication, fill=Indication)) + 
+    geom_histogram(position="identity", alpha=0.5) +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0("log2(", gene_name, "+1) GyNet per indication"))
+  
+  p3 <- ggplot(df1, aes(x = Arm, y=.data[[gene_log]], fill=Arm)) + 
+  geom_boxplot(notch = TRUE, outlier.shape = NA) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  # theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("log2(", gene_name, "+1) GyNet per arm")) 
+  
+  p4 <- ggplot(df1, aes(x = Arm, y=.data[[gene_name]], fill=Arm)) + 
+  geom_boxplot(notch = TRUE, outlier.shape = NA) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  # theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0(gene_name, "GyNet per arm")) 
+  
+  p5 <- ggplot(df1, aes(x = .data[[gene_name]])) + 
+    geom_histogram() +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0(gene_name, "GyNet"))
+  
+  p6 <- ggplot(df1, aes(x = .data[[gene_name]], col=Indication, fill=Indication)) + 
+    geom_histogram(position="identity", alpha=0.5) +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0(gene_name, "GyNet per indication"))
+  
+  # grid.arrange(p1, p2, nrow = 1)
+  return(list(plot1 = p1, plot2 = p2, plot3 = p3, plot4 = p4, plot5 = p5, plot6 = p6))
+}
+
+
+for (gene in genes_of_interest) {
+  cat("### ", gene, " \n\n")
+  res <- create_gene_histograms(gene, coldata_gynet)
+  print(grid.arrange(res$plot1, res$plot2, res$plot3, res$plot4, res$plot5, res$plot6, nrow = 3))
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+
+# Survival plots par bras {.tabset}
+
+## Endo
+
+```{r Kaplan-Meier Endo Arms}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+legend_order <- gsub("Arm=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`, `r legend_order[3]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[3]]`, `r legend_order[4]` `r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[4]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`, `r legend_order[3]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[3]]`, `r legend_order[4]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[4]]`.<br/>
+
+<br/>
+En retirant le bras C et combinant les deux bras Netrin :
+
+```{r Kaplan-Meier Endo Arms NP137}
+
+coldata_gynet$Arm_NP137 <- case_when(
+  coldata_gynet$Arm == "A" ~ "Sans_NP137_A",
+  coldata_gynet$Arm == "B" ~ "Avec_NP137_BD",
+  coldata_gynet$Arm == "D" ~ "Avec_NP137_BD")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+legend_order <- gsub("Arm_NP137=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`.<br/>
+
+
+<br/>
+<br/>
+
+## Cervix
+
+```{r Kaplan-Meier Cervix Arms}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+legend_order <- gsub("Arm=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`, `r legend_order[3]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[3]]`, `r legend_order[4]` `r median(survfit(Surv(OS, Death_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[4]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`, `r legend_order[3]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[3]]`, `r legend_order[4]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[4]]`.<br/>
+
+<br/>
+En retirant le bras C et combinant les deux bras Netrin (B & D) :
+
+```{r Kaplan-Meier Cervix Arms NP137}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+legend_order <- gsub("Arm_NP137=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by Arm",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`.<br/>
+
+<br/>
+<br/>
+
+
+# Survival plots en combinant les bras avec et sans NP137 (sans le bras C : A versus B&D) {.tabset}
+
+## Both indications
+
+```{r Kaplan-Meier both Arms NP137 without C}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet)
+legend_order <- gsub("Arm_NP137=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet, 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet, 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet))[[2]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet))[[2]]`.<br/>
+
+<br/>
+<br/>
+
+## Endo
+
+```{r Kaplan-Meier Endo Arms NP137 without C}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+legend_order <- gsub("Arm_NP137=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Endo'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Endo by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Endo'),]))[[2]]`.<br/>
+
+<br/>
+<br/>
+
+## Cervix
+
+```{r Kaplan-Meier Cervix Arms NP137 without C}
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+legend_order <- gsub("Arm_NP137=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),])
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),], 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(0,.15),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "GyNet Cervix by NP137 Arms",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon  : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`.<br/>
+
+Médianes PFS selon  : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Arm_NP137, data=coldata_gynet[which(coldata_gynet$Indication == 'Cervix'),]))[[2]]`.<br/>
+
+
+# Survival plots selon l'expression des gènes d'intérêt sur les 2 bras avec NP137 {.tabset}
+
+```{r Kaplan-Meier all genes of interest by tabs arms B and D, results='asis', echo=FALSE}
+
+# Function to create KM plots OS & PFS with corrected p-value
+plot_km_corrected <- function(data_all, arms, gene_column, indication, type = 'OS', n_tests = 1) {
+  
+  if (arms == "4 bras") {
+    data <- data_all
+  }
+  else if (arms == "bras A sans NP137") {
+    data <- data_all[which(data_all$Arm == 'A'),]
+  }
+  else if (arms == "bras B&D avec NP137") {
+    data <- data_all[which(data_all$Arm == 'B' | data_all$Arm == 'D'),]
+  }
+  else if (arms == "bras B avec NP137") {
+    data <- data_all[which(data_all$Arm == 'B'),]
+  }
+  
+  col_level <- paste0(unlist(strsplit(gene_column, split='_', fixed=TRUE))[1], '_level_', indication)
+  data[[col_level]] <- case_when(
+    data[[gene_column]] >= median(data[which(data$Indication == indication),gene_column]) ~ "High",
+    data[[gene_column]] < median(data[which(data$Indication == indication),gene_column]) ~ "Low")
+  # Create formula
+  if (type == 'OS') {
+    formula_surv <- as.formula(paste("Surv(OS, Death_status) ~", col_level))
+    y_lab = "Overall Survival"
+  }
+  else {
+    formula_surv <- as.formula(paste("Surv(PFS, Prog_status) ~", col_level))
+    y_lab = "Progression Free Survival"
+  }
+  # Fit KM
+  km_fit <- surv_fit(formula_surv, data = data[which(data$Indication == indication),])
+  # Calculate p-value
+  logrank_test <- survdiff(formula_surv, data = data[which(data$Indication == indication),])
+  pval_raw <- pchisq(logrank_test$chisq, 
+                     df = length(logrank_test$n) - 1, 
+                     lower.tail = FALSE)
+  # Bonferroni correction
+  pval_corrected <- min(pval_raw * n_tests, 1)
+  # Create label
+  pval_label <- paste0(
+    "p = ", format.pval(pval_raw, digits = 3), 
+    "\nBonf. adj. p = ", format.pval(pval_corrected, digits = 3)
+  )
+  # Legend order
+  legend_order <- gsub(paste0(col_level, "="), "", names(km_fit$strata))
+  # Plot
+  p1 <- survminer::ggsurvplot(
+    km_fit, 
+    data = data[which(data$Indication == indication),], 
+    conf.int = TRUE,
+    surv.scale = "percent",
+    break.time.by = 5,
+    xlab = "Follow-up (months)",
+    ylab = y_lab,
+    pval = pval_label,
+    pval.coord = c(0, 0.15),
+    risk.table = TRUE,
+    legend.title = paste0(unlist(strsplit(gene_column, split='_', fixed=TRUE))[1], " level"),
+    legend.labs = legend_order,
+    font.legend = 10, 
+    palette = "Dark2",
+    surv.median.line = "hv",
+    ggtheme = theme_light(),
+    title = paste(type, indication, arms)
+  )
+  # message(c('Médianes obtenues', type, ' ', indication, ' : \n', legend_order[1], ' : ', median(km_fit)[1], '\n', legend_order[2], ' : ', median(km_fit)[2]))
+  # return(p1)
+  msg <- c(
+    paste('Médianes obtenues', type, indication, ': \n'),
+    paste(legend_order[1], ':', median(km_fit)[1], '\n'),
+    paste(legend_order[2], ':', median(km_fit)[2])
+  )
+  return(list(plot = p1, message = msg))
+}
+
+# Use the function for each gene 
+n_tests <- length(genes_of_interest[1:(length(genes_of_interest)-2)])
+# Adapted from https://medium.com/@padraiglucey/generate-tabsets-in-a-for-loop-with-r-markdown-2d81349fb50b & https://stackoverflow.com/questions/42631642/creating-dynamic-tabs-in-rmarkdown
+for (gene in genes_of_interest[1:(length(genes_of_interest)-2)]) {
+  cat("## ", gene, " \n\n")
+  # cat("```{r Kaplan-Meier {{gene}}, echo = TRUE, results='asis'}\n")
+  gene_log <- paste0(gene, '_log')
+  res <- plot_km_corrected(coldata_gynet, "bras B&D avec NP137", gene_log, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B&D avec NP137", gene_log, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B&D avec NP137", gene_log, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B&D avec NP137", gene_log, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+
+# Survival plots selon l'expression des gènes d'intérêt sur le bras A {.tabset}
+
+```{r Kaplan-Meier all genes of interest by tabs arm A, results='asis', echo=FALSE}
+
+for (gene in genes_of_interest[1:(length(genes_of_interest)-2)]) {
+  cat("## ", gene, " \n\n")
+  gene_log <- paste0(gene, '_log')
+  res <- plot_km_corrected(coldata_gynet, "bras A sans NP137", gene_log, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras A sans NP137", gene_log, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras A sans NP137", gene_log, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras A sans NP137", gene_log, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+
+# Survival plots selon l'expression des gènes d'intérêt sur le bras B {.tabset}
+
+```{r Kaplan-Meier all genes of interest by tabs arm B, results='asis', echo=FALSE}
+
+for (gene in genes_of_interest[1:(length(genes_of_interest)-2)]) {
+  cat("## ", gene, " \n\n")
+  gene_log <- paste0(gene, '_log')
+  res <- plot_km_corrected(coldata_gynet, "bras B avec NP137", gene_log, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B avec NP137", gene_log, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B avec NP137", gene_log, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "bras B avec NP137", gene_log, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+
+# Survival plots selon l'expression des gènes d'intérêt sur les 4 bras {.tabset}
+
+```{r Kaplan-Meier all genes of interest by tabs all arms, results='asis', echo=FALSE}
+
+for (gene in genes_of_interest[1:(length(genes_of_interest)-2)]) {
+  cat("## ", gene, " \n\n")
+  gene_log <- paste0(gene, '_log')
+  res <- plot_km_corrected(coldata_gynet, "4 bras", gene_log, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "4 bras", gene_log, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "4 bras", gene_log, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_gynet, "4 bras", gene_log, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+# Survival plots en ne prenant que les individus HR+ / HPV+ {.tabset}
+
+```{r Kaplan-Meier all genes of interest by tabs different arms with positives, results='asis', echo=FALSE}
+
+coldata_positives <- coldata_gynet[which((coldata_gynet$Indication == "Endo" & coldata_gynet$HR == "pos") | (coldata_gynet$Indication == "Cervix" & coldata_gynet$HPV_all == 1)),]
+
+for (gene in genes_of_interest[1:(length(genes_of_interest)-2)]) {
+  cat("## ", gene, " \n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B avec NP137", gene, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B avec NP137", gene, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B avec NP137", gene, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B avec NP137", gene, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  res <- plot_km_corrected(coldata_positives, "bras B&D avec NP137", gene, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B&D avec NP137", gene, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B&D avec NP137", gene, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras B&D avec NP137", gene, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  res <- plot_km_corrected(coldata_positives, "bras A sans NP137", gene, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras A sans NP137", gene, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras A sans NP137", gene, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "bras A sans NP137", gene, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  res <- plot_km_corrected(coldata_positives, "4 bras", gene, 'Endo', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "4 bras", gene, 'Endo', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "4 bras", gene, 'Cervix', 'OS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  res <- plot_km_corrected(coldata_positives, "4 bras", gene, 'Cervix', 'PFS', n_tests = n_tests)
+  print(res$plot)
+  cat(paste(res$message, collapse = "\n"), "\n\n")
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+# EMT scores {.tabset}
+
+## Hallmark
+
+En prenant les 200 gènes M du score EMT de Hallmark et avec les counts DESeq2 / len(gene) uniquement des protein-coding genes, on obtient les scores Hallmark suivants :
+
+```{r scores EMT Hallmark ssGSEA}
+
+tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION.v2025.1.Hs.tsv', sep="\t")
+list_genes_Hallmark <- unlist(strsplit(tmp[17,2], ","))
+list_genes_ssgsea_Hallmark <- list(list_genes_Hallmark, "")
+names(list_genes_ssgsea_Hallmark) <- c("EMT", "")
+
+# Hallmark_score pour GyNet
+gsvaparams <- gsvaParam(as.matrix(norm.count_genesymbol_K),
+                        list_genes_ssgsea_Hallmark)
+result_gsva <- gsva(gsvaparams)
+scores_EMT <- result_gsva[1,]
+coldata_gynet$Hallmark_score <- scores_EMT
+
+# plot
+hist(coldata_gynet$Hallmark_score)
+
+```
+
+On coupe les valeurs à la médiane, cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score Hallmark}
+coldata_gynet$Hallmark_s_level <- case_when(
+  coldata_gynet$Hallmark_score >= median(coldata_gynet$Hallmark_score) ~ "High",
+  coldata_gynet$Hallmark_score < median(coldata_gynet$Hallmark_score) ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Hallmark_s_level, data=coldata_gynet)
+legend_order <- gsub("Mak_s_level=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark gynet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Hallmark_s_level, data=coldata_gynet)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Hallmark gynet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon Score EMT Hallmark : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Hallmark_s_level, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Hallmark_s_level, data=coldata_gynet))[[2]]`.<br/>
+
+Médianes PFS selon Score EMT Hallmark : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Hallmark_s_level, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Hallmark_s_level, data=coldata_gynet))[[2]]`.<br/>
+
+<br/>
+Etude du heatmap selon les 200 gènes Hallmark : 
+
+```{r score EMT Hallmark Heatmap GyNet}
+
+## Ancienne méthode
+# distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+# 
+# expression_genes_200_gynet <- norm.count_gynet_K[which(row.names(norm.count_gynet_K) %in% list_genes_Hallmark),]
+# hm <- heatmap.2(as.matrix(log2(expression_genes_200_gynet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+# 
+# target <- colnames(expression_genes_200_gynet)[hm$colInd]
+# coldata_gynet$row.names <- rownames(coldata_gynet)
+# coldata_gynet %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Hallmark_score, col=Arm)) +
+#   geom_point() +
+#   theme_bw()+ 
+#   theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+matrix_heatmap_200 <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Hallmark),]
+
+# cluster colors 
+Indication_col <- c("turquoise","orangered")
+names(Indication_col) <- c('Endo', 'Cervix')
+Arm_col <- rainbow(length(unique(coldata_gynet$Arm)))
+names(Arm_col) <- sort(unique(coldata_gynet$Arm))
+OS_col <- rainbow(length(unique(coldata_gynet$OS)))
+names(OS_col) <- sort(unique(coldata_gynet$OS))
+
+# cluster legend
+column_ha = HeatmapAnnotation(
+  Indication=coldata_gynet$Indication,
+  Arm=coldata_gynet$Arm,
+  OS=coldata_gynet$OS,
+  col=list(Indication=Indication_col,Arm=Arm_col,OS=OS_col
+  ))
+
+# heatmap
+scaled_mat <- t(scale(t(as.matrix(matrix_heatmap_200))))
+h <-  Heatmap(scaled_mat,
+              col=colorRamp2(c(-4,0,4), c("blue", "white", "red")),
+              clustering_distance_columns  = "spearman",#pearson
+              clustering_method_columns = "ward.D2",
+              clustering_distance_rows  = "spearman",#pearson
+              clustering_method_rows = "ward.D2",
+              # row_km = 2, , column_km = 2,
+              # row_split = 2, column_split = 2,
+              top_annotation = column_ha)
+draw(h)
+
+```
+
+
+## Mak et al. 2014
+
+En prenant les 77 gènes EMT de Mak et al. 2014 et avec les counts DESeq2 / len(gene) uniquement des protein-coding genes, on obtient les scores Mak suivants :
+
+```{r scores EMT Mak ssGSEA}
+tmp <- read.csv('/home/eugenie-modolo/Documents/Reference_files/EMT-MAK2015.csv', sep=";")
+list_genes_M <- tmp[which(tmp$Type == 'M'), 'gene_name']
+list_genes_E <- tmp[which(tmp$Type == 'E'), 'gene_name']
+list_genes_Mak <- c(list_genes_M, list_genes_E)
+
+# Mak score gynet
+expression_genes_M <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_M),]
+expression_genes_E <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_E),]
+# data.frame(t(expression_genes_M))
+coldata_gynet$Mak_score <- NA
+coldata_gynet$E_score <- NA
+for (sample in rownames(coldata_gynet)) {
+  coldata_gynet[sample, 'Mak_score'] <- mean(expression_genes_M[,sample]) - mean(expression_genes_E[,sample])
+  coldata_gynet[sample, 'E_score'] <- mean(expression_genes_E[,sample])
+}
+# vérif : 
+# for (gene_M in list_genes_M) { print(c(gene_M, gene_M %in% row.names(norm.count_genesymbol_K))) }
+# for (gene_E in list_genes_E) { print(c(gene_E, gene_E %in% row.names(norm.count_genesymbol_K))) }
+# /!\ "ADAMTS12" & "COL3A1 (M) et "MARVELD2" & "OCLN" (E) ne sont pas dans norm.count_genesymbol_K
+
+# plot
+hist(coldata_gynet$Mak_score)
+
+```
+
+On coupe les valeurs à la médiane, cela donne les survival plots suivants :
+
+```{r Kaplan-Meier plots EMT score Mak}
+coldata_gynet$Mak_s_level <- case_when(
+  coldata_gynet$Mak_score >= median(coldata_gynet$Mak_score) ~ "High",
+  coldata_gynet$Mak_score < median(coldata_gynet$Mak_score) ~ "Low")
+
+km_fit_os <- survfit(Surv(OS, Death_status) ~ Mak_s_level, data=coldata_gynet)
+legend_order <- gsub("Mak_s_level=", "", names(km_fit_os$strata))
+survminer::ggsurvplot(
+  km_fit_os, 
+  data = coldata_gynet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Overall Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Mak gynet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+km_fit_pfs <- survfit(Surv(PFS, Prog_status) ~ Mak_s_level, data=coldata_gynet)
+survminer::ggsurvplot(
+  km_fit_pfs, 
+  data = coldata_gynet,          # again specify the data used to fit linelistsurv_fit_sex 
+  conf.int = TRUE,              # do not show confidence interval of KM estimates
+  surv.scale = "percent",        # present probabilities in the y axis in %
+  break.time.by = 5,            # present the time axis with an increment of 10 days
+  xlab = "Follow-up months",
+  ylab = "Progression Free Survival",
+  pval = T,                      # print p-value of Log-rank test 
+  pval.coord = c(40,.21),        # print p-value at these plot coordinates
+  risk.table = T,                # print the risk table at bottom 
+  legend.title = "EMT score Mak gynet",       # legend characteristics
+  legend.labs = legend_order,
+  font.legend = 10, 
+  palette = "Dark2",             # specify color palette 
+  surv.median.line = "hv",       # draw horizontal and vertical lines to the median survivals
+  ggtheme = theme_light()        # simplify plot background
+)
+
+```
+
+On obtient les médianes suivantes :<br/>
+
+Médianes OS selon Score EMT Mak : `r legend_order[1]`
+`r median(survfit(Surv(OS, Death_status) ~ Mak_s_level, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(OS, Death_status) ~ Mak_s_level, data=coldata_gynet))[[2]]`.<br/>
+
+Médianes PFS selon Score EMT Mak : `r legend_order[1]`
+`r median(survfit(Surv(PFS, Prog_status) ~ Mak_s_level, data=coldata_gynet))[[1]]`, `r legend_order[2]` `r median(survfit(Surv(PFS, Prog_status) ~ Mak_s_level, data=coldata_gynet))[[2]]`.<br/>
+
+<br/>
+Etude du heatmap selon les 77 gènes Mak :
+
+```{r score EMT Heatmap GyNet}
+
+## Ancienne méthode
+# # distcor <- function(m){ as.dist(1-cor(t(m))  ) }
+# 
+matrix_heatmap_77 <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Mak),]
+# hm <- heatmap.2(as.matrix(log2(expression_genes_77_gynet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+# 
+# target <- colnames(expression_genes_77_gynet)[hm$colInd]
+# coldata_gynet$row.names <- rownames(coldata_gynet)
+# coldata_gynet %>% mutate(row.names=fct_relevel(row.names, target)) %>% ggplot(aes(x=row.names, y=Mak_score, col=Arm)) +
+#   geom_point() +
+#   theme_bw()+ 
+#   theme(axis.text.x = element_text(angle=-40, hjust=.1))
+
+# cluster colors 
+Indication_col <- c("turquoise","orangered")
+names(Indication_col) <- c('Endo', 'Cervix')
+Arm_col <- rainbow(length(unique(coldata_gynet$Arm)))
+names(Arm_col) <- sort(unique(coldata_gynet$Arm))
+OS_col <- rainbow(length(unique(coldata_gynet$OS)))
+names(OS_col) <- sort(unique(coldata_gynet$OS))
+
+# cluster legend
+column_ha = HeatmapAnnotation(
+  Indication=coldata_gynet$Indication,
+  Arm=coldata_gynet$Arm,
+  OS=coldata_gynet$OS,
+  col=list(Indication=Indication_col,Arm=Arm_col,OS=OS_col
+  ))
+
+# heatmap
+scaled_mat <- t(scale(t(as.matrix(matrix_heatmap_77))))
+h <-  Heatmap(scaled_mat,
+              col=colorRamp2(c(-4,0,4), c("blue", "white", "red")),
+              clustering_distance_columns  = "spearman",#pearson
+              clustering_method_columns = "ward.D2",
+              clustering_distance_rows  = "spearman",#pearson
+              clustering_method_rows = "ward.D2",
+              # row_km = 2, , column_km = 2,
+              # row_split = 2, column_split = 2,
+              top_annotation = column_ha)
+draw(h)
+
+```
+
+# Conclusions
+
+Concernant les expressions :<br/>
+- tous les échantillons expriment la netrine et la plupart de ses récepteurs (i.e. pas d'échantillons à zéro) : c'est nettement différent des échantillons de lapnet ;<br/>
+- on voit un décalage dans les expressions entre Endo et Cervix, ce qui n'est pas illogique étant donné qu'il s'agit de tissus différents, mais à prendre en compte dans la comparaison entre ces deux indications.<br/>
+<br/>
+Concernant les survies : <br/>
+- le bras C des deux indications a été arrêté prématurément, car les réponses étaient nettement moins bonnes : cela se retrouve sur les 2 courbes de PFS par bras ;<br/>
+- l'expression de NTN1 dans les échantillons n'est pas prédictive de la différence de réponse entre les bras avec NP137 (B, C, D) et le bras contrôle (A), voire semble aller dans le mauvais sens pour Endo (mais ceci est probablement dû à la mauvaise répartition d'individus RH+ entre les bras randomisés pour cette indication) ;<br/>
+- pour la survie selon le niveau d'expression des gènes d'intérêt : <br/>
+  - effet positif sur la survie constaté pour : NTN1 (OS Cervix), UNC5A (PFS Endo), UNC5B (OS & PFS Endo), UNC5D (PFS Cervix), DSCAM (PFS Cervix), RGMA (PFS Endo) ;<br/>
+  - pas d'effet constaté sur la survie pour : UNC5C, DCC, MCAM, ADORA2B, APP, RGMB ;<br/>
+  - effet négatif sur la survie constaté pour NEO1 (OS & PFS Cervix), ce qui est l'inverse de lapnet ... ;<br/>
+  - attention, en faisant une correction de Bonferroni sur la p-value (multiplication par 13 gènes testés), aucune p-value ne reste significative (sachant qu'elles l'étaient déjà très peu au départ).<br/>
+<br/>
+Remarques générales : <br/>
+- les données patients sont assez différentes entre Endo et Cervix, c'est pour cette raison que les deux populations sont séparées dans la plupart des graphiques ;<br/>
+- la QC des alignements est globalement bonne et donc tous les échantillons ont été traités dans ce rapport, mais la QC par échantillon sera validée dans un autre rapport.<br/>
+<br/>
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

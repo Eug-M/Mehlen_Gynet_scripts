@@ -1,0 +1,543 @@
+---
+title: "GyNet Choix Design - étude des données avant DESeq2"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Gynet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+# BiocManager::install("mixOmics")
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("DEGreport")
+library("apeglm")
+library("ggrepel")
+library("GGally")
+library("gridExtra")
+library("mixOmics")
+
+library("dplyr")
+library("ggplot2")
+library("factoextra")
+library("reshape2")
+library("tidyr")
+library("splines")
+library(viridis)
+# install.packages("estimate", repos="http://R-Forge.R-project.org")
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier la QC sur les échantillons GyNet, avant recherche de gènes différentiellement exprimés via DESeq2.<br/>
+
+<br/>
+<br/>
+
+Analyse combinée des 168 samples, puis en séparant par indication : Endo (101 samples) et Cervix (67 samples).<br/>
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./coldata_GyNet.csv', sep=",")
+coldata$BMI <- coldata$Weight / (coldata$Height)^2
+coldata$HR <- ifelse(
+  coldata$Estrogen_endo == "0" & coldata$Progesterone_endo == "0",
+  "neg",
+  "pos"
+)
+# coldata <- subset( coldata, select = - c(xx, xx))
+
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns 
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons (???)
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+
+count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
+
+coldata <- data.frame(coldata, row.names = count_columns)
+
+coldata_wo_rep <- subset( coldata, select = -c(Age, Height, Weight, BMI, OS, PFS, Cycles_NP137, Cycles_carboplatin, Cycles_paclitaxel, Cycles_pembrolizumab, Purity, CT_perc, QC_duplication_perc, QC_alignedM_Salmon, QC_uniq_aligned) )
+
+for (col in colnames(coldata_wo_rep)) {
+    if (endsWith(col, '_cr')) {
+        coldata_wo_rep[[col]] <- as.numeric(as.vector(coldata_wo_rep[[col]]))
+    }
+}
+
+# creating the Endo and Cervix data
+coldata_Endo <- coldata_wo_rep[which(coldata_wo_rep$Indication == "Endo"),]
+coldata_Endo <- subset( coldata_Endo, select = -c(Indication, HPV_all, HPV16) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Endo <- droplevels.data.frame(coldata_Endo)
+count_matrix_Endo <- count_matrix[, which(coldata_wo_rep$Indication == "Endo")]
+
+coldata_Cervix <- coldata_wo_rep[which(coldata_wo_rep$Indication == "Cervix"),]
+coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Cervix <- droplevels.data.frame(coldata_Cervix)
+count_matrix_Cervix <- count_matrix[, which(coldata_wo_rep$Indication == "Cervix")]
+
+# removing the missing/problematic data for LRT
+coldata_Endo_Primary <- coldata_Endo[which(coldata_Endo$Site == "Primary" & !is.na(coldata_Endo$Estrogen_endo) & !is.na(coldata_Endo$Progesterone_endo) & !is.na(coldata_Endo$best_response)),]
+count_matrix_Endo_Primary <- count_matrix_Endo[, which(coldata_Endo$Site == "Primary" & !is.na(coldata_Endo$Estrogen_endo) & !is.na(coldata_Endo$Progesterone_endo) & !is.na(coldata_Endo$best_response))]
+coldata_Cervix_Primary <- coldata_Cervix[which(coldata_Cervix$Site == "Primary" & !is.na(coldata_Cervix$HPV_all) & !is.na(coldata_Cervix$HPV16)),]
+count_matrix_Cervix_Primary <- count_matrix_Cervix[, which(coldata_Cervix$Site == "Primary" & !is.na(coldata_Cervix$HPV_all) & !is.na(coldata_Cervix$HPV16))] 
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+```
+
+Checkpoints: <br/>
+- nous obtenons `r sum(duplicated(rownames(count_matrix)))` gène(s) au nom dupliqué, sur un total de `r nrow(count_matrix)` protein-coding gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : `r sum(rownames(coldata) == colnames(count_matrix)) == length(rownames(coldata))`.<br/>
+
+
+## Utilisation du LRT pour choisir le design : Endo
+
+
+```{r forward selection strategy LRT Endo}
+
+# Function to check if a design matrix is full rank
+check_design_rank <- function(count_matrix, coldata, formula) {
+  
+  tryCatch({
+    # Create model matrix
+    mm <- model.matrix(formula, data = coldata)
+    # Check rank
+    is_full_rank <- qr(mm)$rank == ncol(mm)
+    
+    return(list(
+      is_valid = is_full_rank,
+      rank = qr(mm)$rank,
+      ncol = ncol(mm)
+    ))
+  }, error = function(e) {
+    return(list(
+      is_valid = FALSE,
+      error = e$message
+    ))
+  })
+}
+
+# Sequential forward selection using LRT
+test_variable_influence_lrt_sequential <- function(count_matrix,
+                                                    coldata,
+                                                    variables = NULL,
+                                                    nber_round = NULL,
+                                                    padj_cutoff = 0.05,
+                                                    lfc_cutoff = 0.58) {
+  
+  # Get all variables from coldata if not specified
+  if (is.null(variables)) {
+    variables <- colnames(coldata)
+  } else {
+    missing_vars <- setdiff(variables, colnames(coldata))
+    if (length(missing_vars) > 0) {
+      stop("These variables not found in coldata: ", paste(missing_vars, collapse = ", "))
+    }
+  }
+  if (is.null(nber_round)) {
+    last_round <- 0
+  } else {
+    last_round <- length(variables) - nber_round
+  }
+  
+  # Storage for all results
+  all_rounds_results <- list()
+  selected_variables <- character()
+  remaining_variables <- variables
+  
+  round_num <- 1
+  
+  # Continue until all variables are tested
+  while (length(remaining_variables) > last_round) {
+    
+    # cat("\n========================================\n")
+    # cat("ROUND", round_num, "\n")
+    # cat("========================================\n")
+    
+    if (round_num == 1) {
+      # cat("Testing variables alone (reduced = ~1)\n\n")
+      reduced_formula <- "~1"
+    } else {
+      # cat("Current design:", paste("~", paste(selected_variables, collapse = " + ")), "\n")
+      # cat("Testing addition of remaining variables\n\n")
+      reduced_formula <- paste("~", paste(selected_variables, collapse = " + "))
+    }
+    
+    # Storage for this round
+    round_results <- list()
+    skipped_tests <- list()
+    
+    # Test each remaining variable
+    for (var in remaining_variables) {
+      
+      if (round_num == 1) {
+        full_formula_str <- paste("~", var)
+        # cat("Testing:", var, "vs ~1\n")
+      } else {
+        full_formula_str <- paste("~", paste(c(var, selected_variables), collapse = " + "))
+        # cat("Testing:", var, "added to current design\n")
+      }
+      
+      # Check design validity
+      full_formula <- as.formula(full_formula_str)
+      rank_check <- check_design_rank(count_matrix, coldata, full_formula)
+      
+      if (!rank_check$is_valid) {
+        # cat("  SKIPPED: Design matrix not full rank\n")
+        skipped_tests[[var]] <- "Not full rank"
+        next
+      }
+      
+      tryCatch({
+        # Create dds
+        dds <- DESeqDataSetFromMatrix(
+          countData = count_matrix,
+          colData = coldata,
+          design = full_formula
+        )
+        
+        # Run LRT
+        dds_lrt <- DESeq(dds, test = "LRT", 
+                        reduced = as.formula(reduced_formula), 
+                        quiet = TRUE)
+        res <- results(dds_lrt)
+        
+        # Count DEGs
+        n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+        n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                         na.rm = TRUE)
+        
+        round_results[[var]] <- data.frame(
+          round = round_num,
+          tested_variable = var,
+          current_design = ifelse(round_num == 1, "none", 
+                                 paste(selected_variables, collapse = " + ")),
+          full_model = full_formula_str,
+          reduced_model = reduced_formula,
+          n_deg_padj_only = n_deg_padj,
+          n_deg_padj_and_lfc = n_deg_both,
+          stringsAsFactors = FALSE
+        )
+        
+        # cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+        
+      }, error = function(e) {
+        # cat("  ERROR:", e$message, "\n")
+        skipped_tests[[var]] <- e$message
+      })
+    }
+    
+    # Combine results for this round
+    if (length(round_results) == 0) {
+      # cat("\nNo successful tests in this round. Stopping.\n")
+      break
+    }
+    
+    round_df <- do.call(rbind, round_results)
+    rownames(round_df) <- NULL
+    
+    # Select best variable (most DEGs with padj + LFC)
+    best_idx <- which.max(round_df$n_deg_padj_and_lfc)
+    best_variable <- round_df$tested_variable[best_idx]
+    best_n_deg <- round_df$n_deg_padj_and_lfc[best_idx]
+    
+    # cat("\n--- ROUND", round_num, "SUMMARY ---\n")
+    # cat("Best variable:", best_variable, "with", best_n_deg, "DEGs\n")
+    
+    # Add to results
+    all_rounds_results[[paste0("round_", round_num)]] <- round_df
+    
+    # Update for next round
+    selected_variables <- c(best_variable, selected_variables)
+    remaining_variables <- setdiff(remaining_variables, best_variable)
+    
+    round_num <- round_num + 1
+  }
+  
+  # Combine all rounds
+  final_results <- do.call(rbind, all_rounds_results)
+  rownames(final_results) <- NULL
+  
+  # Summary
+  # cat("\n========================================\n")
+  # cat("FINAL SUMMARY\n")
+  # cat("========================================\n")
+  # cat("Variables selected in order:\n")
+  for (i in seq_along(selected_variables)) {
+    var_info <- final_results[final_results$round == i & 
+                              final_results$tested_variable == rev(selected_variables)[i], ]
+    # cat(i, ".", rev(selected_variables)[i], "- DEGs:", 
+    #     var_info$n_deg_padj_and_lfc, "\n")
+  }
+  
+  # cat("\nFinal design:", paste("~", paste(selected_variables, collapse = " + ")), "\n")
+  
+  return(list(
+    results = final_results,
+    selected_order = rev(selected_variables),
+    selection_summary = data.frame(
+      rank = 1:length(selected_variables),
+      variable = rev(selected_variables),
+      n_deg = sapply(rev(selected_variables), function(v) {
+        final_results[final_results$tested_variable == v, "n_deg_padj_and_lfc"][1]
+      })
+    )
+  ))
+}
+
+
+
+# Heatmap showing DEGs for each variable at each selection round
+plot_sequential_selection_heatmap <- function(lrt_results, criterion = "padj_and_lfc") {
+  
+  results_df <- lrt_results$results
+  
+  # Choose which DEG count to use
+  if (criterion == "padj_only") {
+    results_df$n_deg <- results_df$n_deg_padj_only
+    legend_title <- "DEGs (padj only)"
+  } else {
+    results_df$n_deg <- results_df$n_deg_padj_and_lfc
+    legend_title <- "DEGs (padj + LFC)"
+  }
+  
+  # Order variables by selection order
+  variable_order <- lrt_results$selected_order
+  if (length(variable_order) < length(unique(results_df$tested_variable))) {
+    for (var in unique(results_df$tested_variable)) {
+      if (var %!in% variable_order) {
+        variable_order <- c(variable_order, var)
+      }
+    }
+  }
+  results_df$tested_variable <- factor(results_df$tested_variable, 
+                                       levels = variable_order)
+  
+  # Create the plot
+  p <- ggplot(results_df, aes(x = factor(round), y = tested_variable, fill = n_deg)) +
+    geom_tile(color = "white", size = 1) +
+    geom_text(aes(label = n_deg), color = "white", size = 4, fontface = "bold") +
+    scale_fill_viridis(option = "plasma", name = legend_title,
+                      na.value = "grey90") +
+    labs(title = "Sequential Variable Selection: DEGs per Round",
+         subtitle = "Variables ordered by selection rank (down = selected first)",
+         x = "Selection Round",
+         y = "Variable") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(size = 11),
+          axis.text.y = element_text(size = 10),
+          plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5, size = 10),
+          legend.position = "right",
+          panel.grid = element_blank())
+  
+  return(p)
+}
+
+
+# Summary barplot showing final selection order # ne fonctionne pas : donne le nombre de DEGs du premier round
+plot_selection_summary <- function(lrt_results, criterion = "padj_and_lfc") {
+  
+  summary_df <- lrt_results$selection_summary
+  
+  # Order by rank
+  summary_df$variable <- factor(summary_df$variable, levels = summary_df$variable)
+  
+  p <- ggplot(summary_df, aes(x = variable, y = n_deg, fill = rank)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = n_deg), vjust = -0.5, size = 4) +
+    scale_fill_viridis(option = "viridis", direction = -1, 
+                      name = "Selection\nRank") +
+    labs(title = "Variable Selection Order and Impact",
+         subtitle = "Number of DEGs when variable was selected",
+         x = "Variable (ordered by selection)",
+         y = "Number of DEGs") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+          plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5, size = 10))
+  
+  return(p)
+}
+
+# Combined visualization
+plot_sequential_results <- function(lrt_results, criterion = "padj_and_lfc") {
+  
+  p1 <- plot_sequential_selection_heatmap(lrt_results, criterion)
+  p2 <- plot_selection_summary(lrt_results, criterion)
+  
+  grid.arrange(p1, p2, nrow = 2, heights = c(2, 1))
+}
+
+# The heatmap will show:
+# - Rows: Variables ordered by when they were selected (top = selected first)
+# - Columns: Selection rounds (1, 2, 3, ...)
+# - Color intensity: Number of DEGs found when that variable was tested in that round
+# - Diagonal pattern: The selected variable in each round (brightest in its selection round)
+# The barplot shows the final selection order and how many DEGs each variable contributed when it was added to the design.
+
+
+# Run sequential selection
+sequential_results <- test_variable_influence_lrt_sequential(
+  count_matrix = count_matrix_Endo_Primary,
+  coldata = coldata_Endo_Primary,
+  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HR", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
+  nber_round = 5, # or NULL for all rounds
+  padj_cutoff = 0.05,
+  lfc_cutoff = 0.58
+)
+
+# View results table
+print(sequential_results$results)
+
+# View selection order
+print(sequential_results$selection_summary)
+
+# Visualize
+plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc")
+# plot_selection_summary(sequential_results, criterion = "padj_and_lfc")
+
+# Combined plot
+# plot_sequential_results(sequential_results, criterion = "padj_and_lfc")
+
+# # Save results
+# write.csv(sequential_results$results, "sequential_lrt_results.csv", row.names = FALSE)
+# write.csv(sequential_results$selection_summary, "variable_selection_order.csv", row.names = FALSE)
+
+```
+
+
+## Utilisation du LRT pour choisir le design : Cervix
+
+
+```{r forward selection strategy LRT Cervix}
+
+# Run sequential selection
+sequential_results <- test_variable_influence_lrt_sequential(
+  count_matrix = count_matrix_Cervix_Primary,
+  coldata = coldata_Cervix_Primary,
+  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HPV16", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
+  nber_round = 5, # or NULL for all rounds
+  padj_cutoff = 0.05,
+  lfc_cutoff = 0.58
+)
+
+# View results table
+print(sequential_results$results)
+
+# View selection order
+print(sequential_results$selection_summary)
+
+# Visualize
+plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc")
+
+```
+
+
+# Conclusion et remarques (à modifier !!)
+
+Choix du design, selon l'indication :<br/>
+- variables à inclure pour retirer les effets non recherchés (on en choisit une par catégorie pour qu'elles ne risquent pas d'être orthogonales) : <br/>
+  - pour les données cliniques : Age_cr est le mieux placé dans 2 des trois (LRT, PLS_600). Il pourrait être intéressant de tester en plus (si non-orthogonal) : (i) Sex (bien classé en LRT et PLS_all), (ii) Height_cr (bien classé en LRT, mais pas en PLS et pas de logique biologique ...), (iii) les 4 variables de survie citées ci-dessous <br/> 
+  - pour les données de QC : QC_aligned_M_cr est le mieux placé dans 2 des trois (LRT, PLS_all) <br/> 
+  - pour l'étude des pré : il faudra peut-être ajouter Time dans les variables avant celle d'intérêt, car il est très haut dans LRT mais pas les PLS.<br/>
+<br/>
+- variables explicatives :<br/>
+  - pour la recherche de biomarqueurs de survie (étude uniquement des pre) : il y a le choix entre : (i) best_lesion_perc_cr (très bon en valeur unique dans le LRT et dans PLS_600), (ii) Best_response_2 (bien classé dans les 3), (iii) tumor_spline_slope_cr (bon en LRT mais pas super en PLS), (iv) Prog_status (pas mal classé dans les 3).<br/>
+  - pour la différence pre/post : Time ressort très nettement en LRT (c'était la seule variable pour cette condition de toutes façons).<br/>
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

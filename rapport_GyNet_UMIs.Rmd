@@ -1,0 +1,430 @@
+---
+title: "GyNet"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Gynet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies, results = "hide", include=F}
+
+library("RColorBrewer")
+library("dplyr")
+library("ggplot2")
+library(gridExtra)
+library("tidyverse")
+library("viridis")
+library('survival')
+library(ranger)
+library(ggfortify)
+library(survminer)
+library(KMEANS.KNN)
+library(factoextra)
+library(GSVA)
+library(gplots)
+library("DESeq2")
+library(ggrepel)
+library(AnnotationDbi) 
+library(org.Hs.eg.db)
+library(GenomicFeatures)
+library(parameters)
+library(txdbmaker)
+library("rtracklayer")
+library("ComplexHeatmap")
+library(circlize)
+library(ggpubr)
+```
+
+# Objectif
+
+Etudier si les expressions de gènes varient selon si on a pris en compte les UMIs dans l'alignement ou non.
+<br/>
+
+
+# Jeux de données avec et sans UMIs
+
+L'étude porte sur 20 samples qui ont été alignés avec et sans les UMIs. Le but est de vérifier si l'utilisation des UMIs change notablement l'expression après alignement.
+
+## Expression globale des gènes {.tabset}
+
+```{r creation tableaux}
+
+# coldata Gynet
+coldata_gynet = read.csv('./coldata_GyNet.csv', sep=",")
+
+# without UMIs
+counts_genes_woUMI <- read.table("/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+
+count_columns <- colnames(counts_genes_woUMI)[colnames(counts_genes_woUMI) != "gene_name"]
+# besoin de prendre les integers pour DESeq2
+counts_genes_woUMI[count_columns] <- round(counts_genes_woUMI[count_columns])
+count_matrix_woUMI <- as.matrix(counts_genes_woUMI[, count_columns])
+# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour retirer les doublons
+# dup_genes <- counts_genes_woUMI[duplicated(counts_genes_woUMI$gene_name),'gene_name']
+# counts_genes_woUMI$feature <- ifelse((is.na(counts_genes_woUMI$gene_name) | counts_genes_woUMI$gene_name %in% dup_genes), rownames(counts_genes_woUMI), counts_genes_woUMI$gene_name)
+# count_matrix_woUMI <- as.matrix(counts_genes_woUMI[, count_columns])
+# rownames(count_matrix_woUMI) <- counts_genes_woUMI$feature
+# keeping only the protein-coding genes
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_woUMI_pcg <- as.matrix(counts_genes_woUMI[which(rownames(counts_genes_woUMI) %in% keep_genes), count_columns])
+# count_matrix_woUMI_pcg <- counts_genes_woUMI[which(rownames(counts_genes_woUMI) %in% keep_genes), count_columns]
+# rownames(count_matrix_woUMI_pcg) <- counts_genes_woUMI[which(rownames(counts_genes_woUMI) %in% keep_genes),"feature"]
+
+
+coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
+
+# with UMIs
+counts_genes_UMI <- read.table("/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore_withUMIs/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+
+count_columns <- colnames(counts_genes_UMI)[colnames(counts_genes_UMI) != "gene_name"]
+# besoin de prendre les integers pour DESeq2
+counts_genes_UMI[count_columns] <- round(counts_genes_UMI[count_columns])
+count_matrix_UMI <- as.matrix(counts_genes_UMI[, count_columns])
+# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code si doublons
+# dup_genes <- counts_genes_UMI[duplicated(counts_genes_UMI$gene_name),'gene_name']
+# counts_genes_UMI$feature <- ifelse((is.na(counts_genes_UMI$gene_name) | counts_genes_UMI$gene_name %in% dup_genes), rownames(counts_genes_UMI), counts_genes_UMI$gene_name)
+# count_matrix_UMI <- as.matrix(counts_genes_UMI[, count_columns])
+# rownames(count_matrix_UMI) <- counts_genes_UMI$feature
+count_matrix_UMI_pcg <- as.matrix(counts_genes_UMI[which(rownames(counts_genes_UMI) %in% keep_genes), count_columns])
+# # keeping only the protein-coding genes
+# count_matrix_UMI_pcg <- counts_genes_UMI[which(rownames(counts_genes_UMI) %in% keep_genes), count_columns]
+# rownames(count_matrix_UMI_pcg) <- counts_genes_UMI[which(rownames(counts_genes_UMI) %in% keep_genes),"feature"]
+
+# keeping only the common samples
+coldata_gynet <- coldata_gynet[which(coldata_gynet$SampleID %in% count_columns),]
+count_matrix_woUMI <- count_matrix_woUMI[,which(colnames(count_matrix_woUMI) %in% count_columns)]
+count_matrix_woUMI_pcg <- count_matrix_woUMI_pcg[,which(colnames(count_matrix_woUMI_pcg) %in% count_columns)]
+
+# keeping only the genes in common between with and without UMIs (in the same order)
+common_genes <- intersect(rownames(count_matrix_woUMI), rownames(count_matrix_UMI))
+count_matrix_woUMI_aligned <- count_matrix_woUMI[common_genes, ]
+count_matrix_UMI_aligned <- count_matrix_UMI[common_genes, ]
+common_genes_pcg <- intersect(rownames(count_matrix_woUMI_pcg), rownames(count_matrix_UMI_pcg))
+count_matrix_woUMI_pcg_aligned <- count_matrix_woUMI_pcg[common_genes_pcg, ]
+count_matrix_UMI_pcg_aligned <- count_matrix_UMI_pcg[common_genes_pcg, ]
+
+# # draw all tables
+# as.matrix(count_matrix_woUMI) %>%
+# DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+# DT::formatStyle(columns = colnames(count_matrix_woUMI),fontSize = '80%')
+
+```
+
+### All genes
+
+```{r global correlation all genes}
+
+# for (sample in count_columns) {
+#   sp <- ggscatter(data.frame(x=count_matrix_UMI_aligned[,sample], y=count_matrix_woUMI_aligned[,sample]), x = x, y = y,
+#      add = "reg.line",  # Add regression line
+#      add.params = list(color = "blue", fill = "lightgray"), # Customize reg. line
+#      conf.int = TRUE, # Add confidence interval
+#      xlab="with UMIs", ylab="without UMI", title=sample
+#      )
+#   sp + stat_cor(method = "pearson", label.x = 3, label.y = 30)
+#   sp + stat_cor(p.accuracy = 0.001, r.accuracy = 0.01)
+# }
+# print(sp)
+
+# plot correlation per sample
+correlations <- sapply(colnames(count_matrix_UMI_aligned), function(sample) {
+  cor(count_matrix_UMI_aligned[, sample], count_matrix_woUMI_aligned[, sample], method = "pearson")
+})
+cor_df <- data.frame(
+  sample = colnames(count_matrix_UMI_aligned),
+  correlation = correlations
+)
+
+p <- ggplot(cor_df, aes(x = reorder(sample, correlation), y = correlation)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_hline(yintercept = 0.9, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(title = "Sample-wise Correlation between Alignments",
+       x = "Sample",
+       y = "Pearson Correlation") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+print(p)
+
+# MA plot 
+mean_counts1 <- rowMeans(count_matrix_UMI_aligned)
+mean_counts2 <- rowMeans(count_matrix_woUMI_aligned)
+# Average and difference
+A <- (log2(mean_counts1 + 1) + log2(mean_counts2 + 1)) / 2
+M <- log2(mean_counts2 + 1) - log2(mean_counts1 + 1)
+df_ma <- data.frame(A = A, M = M)
+
+cat("Genes with >2-fold difference:", sum(abs(M) > 1, na.rm = TRUE), "/", length(M), "\n")
+
+p <- ggplot(df_ma, aes(x = A, y = M)) +
+  geom_hex(bins = 100) +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed") +
+  geom_hline(yintercept = c(-1, 1), color = "orange", linetype = "dotted") +
+  scale_fill_viridis(trans = "log10", name = "Count") +
+  labs(title = "MA Plot: Alignment Comparison",
+       subtitle = "M = log2(woUMI)-log2(withUMI), A = average log2 counts",
+       x = "A: Average log2(counts + 1)",
+       y = "M: log2 fold change (woUMI-withUMI)") +
+  theme_minimal()
+print(p)
+
+# global scatter plot 
+counts1 <- as.vector(as.matrix(count_matrix_UMI_aligned))
+counts2 <- as.vector(as.matrix(count_matrix_woUMI_aligned))
+non_zero <- counts1 > 0 & counts2 > 0
+counts1_nz <- counts1[non_zero]
+counts2_nz <- counts2[non_zero]
+cor_all <- cor(counts1, counts2, method = "pearson")
+cor_nz <- cor(counts1_nz, counts2_nz, method = "pearson")
+df_plot <- data.frame(
+  alignment1 = log2(counts1_nz + 1),
+  alignment2 = log2(counts2_nz + 1)
+)
+p <- ggplot(df_plot, aes(x = alignment1, y = alignment2)) +
+  geom_hex(bins = 100) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  scale_fill_viridis(trans = "log10", name = "Count") +
+  labs(title = "Global Count Comparison (All Samples)",
+       subtitle = paste("Pearson correlation:", round(cor_nz, 3)),
+       x = "With UMIs (log2 counts + 1)",
+       y = "Without UMIs (log2 counts + 1)") +
+  theme_minimal() +
+  coord_fixed()
+print(p)
+
+```
+
+<br/>
+<br/>
+
+
+### Protein-coding genes
+
+```{r global correlation protein-coding genes}
+
+# plot correlation per sample
+correlations <- sapply(colnames(count_matrix_UMI_pcg_aligned), function(sample) {
+  cor(count_matrix_UMI_pcg_aligned[, sample], count_matrix_woUMI_pcg_aligned[, sample], method = "pearson")
+})
+cor_df <- data.frame(
+  sample = colnames(count_matrix_UMI_pcg_aligned),
+  correlation = correlations
+)
+
+p <- ggplot(cor_df, aes(x = reorder(sample, correlation), y = correlation)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_hline(yintercept = 0.9, linetype = "dashed", color = "red") +
+  coord_flip() +
+  labs(title = "Sample-wise Correlation between Alignments (protein-coding genes)",
+       x = "Sample",
+       y = "Pearson Correlation") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 8))
+print(p)
+
+# global scatter plot 
+counts1 <- as.vector(as.matrix(count_matrix_UMI_pcg_aligned))
+counts2 <- as.vector(as.matrix(count_matrix_woUMI_pcg_aligned))
+non_zero <- counts1 > 0 & counts2 > 0
+counts1_nz <- counts1[non_zero]
+counts2_nz <- counts2[non_zero]
+cor_all <- cor(counts1, counts2, method = "pearson")
+cor_nz <- cor(counts1_nz, counts2_nz, method = "pearson")
+df_plot <- data.frame(
+  alignment1 = log2(counts1_nz + 1),
+  alignment2 = log2(counts2_nz + 1)
+)
+p <- ggplot(df_plot, aes(x = alignment1, y = alignment2)) +
+  geom_hex(bins = 100) +
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed") +
+  scale_fill_viridis(trans = "log10", name = "Count") +
+  labs(title = "Global Count Comparison (All Samples, protein-coding genes)",
+       subtitle = paste("Pearson correlation:", round(cor_nz, 3)),
+       x = "With UMIs (log2 counts + 1)",
+       y = "Without UMIs (log2 counts + 1)") +
+  theme_minimal() +
+  coord_fixed()
+print(p)
+
+```
+
+<br/>
+<br/>
+
+
+## Expression des gènes d'intérêt {.tabset}
+
+```{r donnees cliniques GyNet et expression des genes d interet, results='asis', echo=FALSE}
+
+counts_genes_gynet <- read.table("/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+
+count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name"]
+# besoin de prendre les integers pour DESeq2
+counts_genes_gynet[count_columns] <- round(counts_genes_gynet[count_columns])
+count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
+# rownames(count_matrix_gynet) <- counts_genes_gynet$gene_name  # Gene names become row names
+
+# on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne
+dup_genes <- counts_genes_gynet[duplicated(counts_genes_gynet$gene_name),'gene_name']
+counts_genes_gynet$feature <- ifelse((is.na(counts_genes_gynet$gene_name) | counts_genes_gynet$gene_name %in% dup_genes), rownames(counts_genes_gynet), counts_genes_gynet$gene_name)
+count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name" & colnames(counts_genes_gynet) != "feature"]
+count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
+rownames(count_matrix_gynet) <- counts_genes_gynet$feature
+
+coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
+
+# normalisation des counts par DESeq2
+dds_gynet <- DESeqDataSetFromMatrix(
+  countData = count_matrix_gynet,
+  colData = coldata_gynet,
+  design = ~ Arm
+)
+dds_gynet <- DESeq(dds_gynet)
+norm.count_gynet <- as.data.frame(counts(dds_gynet, normalized=TRUE))
+
+genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent 
+expression_genes <- norm.count_gynet[which(row.names(norm.count_gynet) %in% genes_of_interest),]
+t_expression_genes <- data.frame(t(expression_genes))
+for (gene in genes_of_interest) {
+  coldata_gynet[[gene]] <- t_expression_genes[[gene]]
+  coldata_gynet[[paste0(gene, "_log")]] <- log2(t_expression_genes[[gene]] + 1)
+}
+
+res1 <- sum(duplicated(rownames(count_matrix_gynet)))
+res2 <- nrow(count_matrix_gynet)
+res3 <- sum(rownames(coldata_gynet) == colnames(count_matrix_gynet)) == length(rownames(coldata_gynet))
+cat(
+'Checkpoints: <br/>
+- nous obtenons ', res1, ' gènes au nom dupliqués, sur un total de ', res2, ' gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : ', res3, '.<br/>')
+
+# draw coldata_gynet table
+as.matrix(coldata_gynet) %>%
+DT::datatable(rownames=F, escape = F, width ='100%',filter="top") %>%
+DT::formatStyle(columns = colnames(coldata_gynet),fontSize = '80%')
+
+# draw histograms for each gene of interest
+create_gene_histograms <- function(gene_name, df1) {
+  gene_log <- paste0(gene_name, "_log")
+  
+  p1 <- ggplot(df1, aes(x = .data[[gene_log]])) + 
+    geom_histogram() +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0("log2(", gene_name, "+1) GyNet"))
+  
+  p2 <- ggplot(df1, aes(x = .data[[gene_log]], col=Indication, fill=Indication)) + 
+    geom_histogram(position="identity", alpha=0.5) +
+    expand_limits(x = 0, y = 0) +
+    ggtitle(paste0("log2(", gene_name, "+1) GyNet per indication"))
+  
+  p3 <- ggplot(df1, aes(x = Arm, y=.data[[gene_log]], fill=Arm)) + 
+  geom_boxplot(notch = TRUE, outlier.shape = NA) +
+  scale_fill_viridis(discrete = TRUE, alpha=0.6) +
+  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  theme_bw()+ 
+  # theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
+  ggtitle(paste0("log2(", gene_name, "+1) GyNet per arm")) 
+  
+  # grid.arrange(p1, p2, nrow = 1)
+  return(list(plot1 = p1, plot2 = p2, plot3 = p3))
+}
+
+
+for (gene in genes_of_interest) {
+  cat("### ", gene, " \n\n")
+  res <- create_gene_histograms(gene, coldata_gynet)
+  print(grid.arrange(res$plot1, res$plot2, res$plot3, nrow = 2))
+  cat("\n\n")
+}
+
+```
+
+<br/>
+<br/>
+
+
+# Conclusions
+
+Concernant les expressions :<br/>
+-  <br/>
+<br/>
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```

@@ -1,0 +1,463 @@
+---
+title: "GyNet DEGs - avec DESeq2"
+author: "Eugénie Modolo"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    df_print: kable
+    highlight: default
+    number_sections: yes
+    self_contained: yes
+    theme: default
+    toc: yes
+    toc_float: no
+    toc_depth: 4
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, results = "hide", include=F}
+#knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+
+path <- "/home/eugenie-modolo/Documents/Gynet/"
+setwd(path)
+
+# WKDIR <- paste0(path,"/DE_analysis")
+# setwd(WKDIR)
+```
+
+```{r report colors, results = "hide"}
+#color html : https://www.w3schools.com/tags/ref_colornames.asp
+text.col      <- 'Black'
+
+darker.col    <- '#666699'
+darker.col.2  <- '#8c8cb2'
+darker.col.3  <- '#ababc7'
+darker.col.4  <- '#d1d1e0'
+darker.col.5  <- '#f0f0f5'
+
+lighter.col   <- '#c18d0b'
+lighter.col.2 <- "#d4af54"
+lighter.col.3 <- "#e3cc91"
+```
+
+<style> 
+toc {position: fixed; overflow:auto}
+body {text-align: justify; color: `r text.col`; font-size: 16px}
+a:link {color: `r lighter.col.2`}
+a:visited {color: `r lighter.col.2`}
+h1.title {color: `r darker.col`  ; font-size: 28px}
+h1 {color: `r darker.col`  ; font-size: 24px}
+h2 {color: `r lighter.col` ; font-size: 20px}
+h3 {color: `r darker.col.2` ; font-size: 18px}
+h4 {color: `r text.col` ; font-size: 16px}
+.list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {background-color: `r darker.col.3`}
+.datatables{overflow: auto}
+td { white-space: nowrap; }
+.nav-pills>li>a {
+     color: `r darker.col.3`;}
+.nav-pills>li>a:hover, .nav-pills>li>a:focus, .nav-pills>li.active>a, .nav-pills>li.active>a:hover, .nav-pills>li.active>a:focus{color: black;background-color: `r darker.col.3`;}
+</style>
+
+```{r librairies and functions, results = "hide", include=F}
+# BiocManager::install("mixOmics")
+library("DESeq2")
+library("rtracklayer")
+library("SummarizedExperiment")
+library("pheatmap")
+library("RColorBrewer")
+library("DEGreport")
+library("apeglm")
+library("ggrepel")
+library("GGally")
+library("gridExtra")
+library("mixOmics")
+library(fgsea)
+library(clusterProfiler)
+
+library("dplyr")
+library("ggplot2")
+library('gplots')
+library("gridExtra")
+library("factoextra")
+library(msigdbr)
+library("reshape2")
+library("tidyr")
+library("splines")
+library("ComplexHeatmap")
+library(circlize)
+library(viridis)
+# install.packages("estimate", repos="http://R-Forge.R-project.org")
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+# Objectif
+
+Etudier les gènes différentiellement exprimés sur les données GyNet, en séparant par indication (endomètre et col de l'utérus).<br/> 
+
+<br/>
+<br/>
+
+```{r creating dataframes}
+
+# colData
+coldata <- read.csv('./coldata_GyNet.csv', sep=",")
+coldata$BMI <- coldata$Weight / (coldata$Height)^2
+coldata$HR <- ifelse(
+  coldata$Estrogen_endo == "0" & coldata$Progesterone_endo == "0",
+  "neg",
+  "pos"
+)
+coldata$best_response2 <- case_when(
+  coldata$best_response == "SD" ~ "SD_PD",
+  coldata$best_response == "PD" ~ "SD_PD", 
+  coldata$best_response == "PR" ~ "CR_PR",
+  coldata$best_response == "CR" ~ "CR_PR",
+  TRUE ~ NA_character_  # for any unexpected values
+)
+# coldata <- subset( coldata, select = - c(xx, xx))
+
+# scale and center the numeric columns
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+for (numeric_col in numeric_columns) {
+  coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
+}
+# convert to factors the non-numeric columns
+factor_columns <- colnames(coldata) %!in% numeric_columns 
+coldata[factor_columns] <- lapply(coldata[factor_columns], factor)
+
+
+# countData (gene counts, not transcript's)
+counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# we need integers for DESeq2
+counts_genes[count_columns] <- round(counts_genes[count_columns])
+#counts_genes <- as.matrix(counts_genes)
+
+# keeping only the protein-coding genes, as we used a protocol capturing only exons (???)
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf_df <- as.data.frame(gtf)
+gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
+gene_info <- unique(gene_info)
+keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
+keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
+count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+
+count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
+
+coldata <- data.frame(coldata, row.names = count_columns)
+
+coldata_wo_rep <- subset( coldata, select = -c(Age, Height, Weight, BMI, OS, PFS, Cycles_NP137, Cycles_carboplatin, Cycles_paclitaxel, Cycles_pembrolizumab, Purity, CT_perc, QC_duplication_perc, QC_alignedM_Salmon, QC_uniq_aligned) )
+
+for (col in colnames(coldata_wo_rep)) {
+    if (endsWith(col, '_cr')) {
+        coldata_wo_rep[[col]] <- as.numeric(as.vector(coldata_wo_rep[[col]]))
+    }
+}
+
+# creating the Endo and Cervix data
+coldata_Endo <- coldata_wo_rep[which(coldata_wo_rep$Indication == "Endo"),]
+coldata_Endo <- subset( coldata_Endo, select = -c(Indication, HPV_all, HPV16) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Endo <- droplevels.data.frame(coldata_Endo)
+count_matrix_Endo <- count_matrix[, which(coldata_wo_rep$Indication == "Endo")]
+
+coldata_Cervix <- coldata_wo_rep[which(coldata_wo_rep$Indication == "Cervix"),]
+coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Cervix <- droplevels.data.frame(coldata_Cervix)
+count_matrix_Cervix <- count_matrix[, which(coldata_wo_rep$Indication == "Cervix")]
+
+# removing the missing/problematic data for LRT
+coldata_Endo_Primary <- coldata_Endo[which(coldata_Endo$Site == "Primary" & !is.na(coldata_Endo$Estrogen_endo) & !is.na(coldata_Endo$Progesterone_endo) & !is.na(coldata_Endo$best_response)),]
+count_matrix_Endo_Primary <- count_matrix_Endo[, which(coldata_Endo$Site == "Primary" & !is.na(coldata_Endo$Estrogen_endo) & !is.na(coldata_Endo$Progesterone_endo) & !is.na(coldata_Endo$best_response))]
+coldata_Cervix_Primary <- coldata_Cervix[which(coldata_Cervix$Site == "Primary" & !is.na(coldata_Cervix$HPV_all) & !is.na(coldata_Cervix$HPV16)),]
+count_matrix_Cervix_Primary <- count_matrix_Cervix[, which(coldata_Cervix$Site == "Primary" & !is.na(coldata_Cervix$HPV_all) & !is.na(coldata_Cervix$HPV16))] 
+
+# Set thresholds
+padj.cutoff <- 0.05
+lfc.cutoff <- 0.58
+
+```
+
+Checkpoints: <br/>
+- nous obtenons `r sum(duplicated(rownames(count_matrix)))` gène(s) au nom dupliqué, sur un total de `r nrow(count_matrix)` protein-coding gènes.<br/>
+- vérification que les samples sont les mêmes (même nombre et même ordre) entre coldata et la matrice de comptage : `r sum(rownames(coldata) == colnames(count_matrix)) == length(rownames(coldata))`.<br/>
+
+
+## Indication : Endo
+
+### Sites de prélèvement primaire uniquement
+
+Design 1 : ~ HR + Arm + QC_duplication_perc_cr + Batch + Purity_cr + best_response2 <br/>
+Design 2 : ~ HR + Arm + QC_duplication_perc_cr + Batch + Purity_cr + OS_cr <br/>
+
+```{r DEGs Endo primary}
+
+design_1 <- as.formula("~ HR + Arm + QC_duplication_perc_cr + Batch + Purity_cr + best_response2")
+design_2 <- as.formula("~ HR + Arm + QC_duplication_perc_cr + Batch + Purity_cr + OS_cr")
+
+designs <- list(
+  design_1 = design_1,
+  design_2 = design_2
+)
+coefs <- list(
+  design_1 = "best_response2_SD_PD_vs_CR_PR",
+  design_2 = "OS_cr"
+)
+
+selected_genes_list_Endo <- list()
+norm.count_list_Endo <- list()
+res_list_Endo <- list()
+# resLFC_list <- list()
+# selected_genesLFC_list_Endo <- list()
+for (i in 1:2) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_Endo_Primary,
+    colData = coldata_Endo_Primary,
+    design = designs[[design_name]]
+  )
+  
+  dds <- DESeq(dds)
+  # dds_list[[design_name]] <- dds
+  
+  # norm.count <- as.data.frame(counts(dds_prepost, normalized=TRUE))
+  norm.count <- assay(vst(dds, blind=FALSE))
+  norm.count_list_Endo[[design_name]] <- norm.count
+  
+  # connaître le dernier coef de dds
+  # resultsNames(dds)
+  
+  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+  res_list_Endo[[design_name]] <- res
+  # summary(res_prepost_1)
+  # design1 :  DEGs
+  # design2 :  DEGs
+  resOrdered <- res[order(res$padj), ]
+  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+  selected_genes_list_Endo[[design_name]] <- selected_genes
+  
+  # resLFC <- lfcShrink(dds, coef=coefs[[design_name]], type="apeglm", lfcThreshold=lfc.cutoff)
+  # resLFC_list[[design_name]] <- resLFC
+  # summary(resLFC_1)
+  # resLFCordered <- resLFC[order(resLFC$svalue), ]
+  # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+  # selected_genesLFC_list_Endo[[design_name]] <- selected_genesLFC
+  
+  # checking the DESeq2 dispersion 
+  plotDispEsts(dds, main=paste("DESeq2 dispersion plot Endo", design_name))
+  
+  # looking at the number of outliers
+  boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance Endo", design_name))
+  
+  # MA-plot
+  # plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA Endo", design_name))
+
+}
+
+venn(selected_genes_list_Endo)
+
+# heatmaps des différents designs, en colorant par quelques variables d'intérêt
+arm_col <- rainbow(length(unique(coldata_Endo_Primary$Arm)))
+names(arm_col) <- sort(unique(coldata_Endo_Primary$Arm))
+hr_col <- c("cyan","black")
+names(hr_col) <- c("pos","neg")
+bresp_col <- c("green", "darkgreen", "grey","red")
+names(bresp_col) <- c("CR", "PR", "SD", "PD")
+OS_col <- rainbow(length(unique(coldata_Endo_Primary$OS_cr)))
+names(OS_col) <- sort(unique(coldata_Endo_Primary$OS_cr))
+column_ha = HeatmapAnnotation(
+    Arm=coldata_Endo_Primary$Arm,
+    HR=coldata_Endo_Primary$HR,
+    Best_response=coldata_Endo_Primary$best_response,
+    OS=coldata_Endo_Primary$OS_cr,
+    col=list(Arm=arm_col,HR=hr_col,Best_response=bresp_col,OS=OS_col
+    ))
+
+for ( i in 1:2 ) { # erreur avec le design 2 ...
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_Endo[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_Endo <- norm.count_list_Endo[[design_name]][which(rownames(norm.count_list_Endo[[design_name]]) %in% selected_genes_list_Endo[[design_name]]),]
+  rownames(matrix_heatmap_Endo) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_Endo), rownames(counts_genes))], unique = T)
+  # heatmap.2(as.matrix(matrix_heatmap_Endo), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+  draw(Heatmap(as.matrix(matrix_heatmap_Endo),
+                clustering_distance_columns  = "pearson",
+                clustering_method_columns = "ward.D2",
+                clustering_distance_rows  = "pearson",
+                clustering_method_rows = "ward.D2",
+                top_annotation = column_ha))
+}
+
+# Volcano plots without shrink
+for ( i in 1:2 ) {
+  design_name <- paste0("design_", i)
+  with(res_list_Endo[[design_name]], plot(log2FoldChange, -log10(padj), pch=20, main=paste("Volcano plot Endo design", i), cex=0.5))
+  with(subset(res_list_Endo[[design_name]], padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
+  with(subset(res_list_Endo[[design_name]], abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
+  with(subset(res_list_Endo[[design_name]], padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+}
+
+# # Volcano plot shrinked
+# with(resLFCordered, plot(log2FoldChange, -log10(padj), pch=20, main="Volcano plot design2 shrinked", cex=0.5))
+# with(subset(resLFCordered, padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
+# with(subset(resLFCordered, abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
+# with(subset(resLFCordered, padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+
+# Autre code Volcano plot : (https://ciri.gitbiopages.ens-lyon.fr/bibs/carine/rnaseq_analysis_training/Session_6.html)
+# res_tableOE_df <- res_list[[design_name]] %>%
+#      as_tibble(rownames = "gene_ID") 
+# res_tableOE_df <- res_tableOE_df %>%
+#      mutate(is_up   = ifelse(padj < 0.05 & log2FoldChange > 0, "yes","no"),
+#             is_down = ifelse(padj < 0.05 & log2FoldChange < 0, "yes","no"))
+# res_tableOE_df <- res_tableOE_df %>% 
+#      mutate(threshold_OE = (!is.na(padj)) & padj < 0.05 & abs(log2FoldChange) >= 0.58)
+# ggplot(res_tableOE_df) +
+#      geom_point(aes(x = log2FoldChange, y = -log10(padj), colour = threshold_OE)) +
+#      ggtitle(paste("Volcano plot Endo design", i)) +
+#      xlab("log2 fold change") + 
+#      ylab("-log10 adjusted p-value") +
+#      theme_bw() +
+#      theme(legend.position = "none",
+#            plot.title = element_text(size = rel(1.5), hjust = 0.5),
+#            axis.title = element_text(size = rel(1.25))) 
+
+# Other interesting figure (to be coded) (https://github.com/hamidghaedi/RNA-seq-differential-expression#4-visualization)
+# visualize gene count data, for the DEGs, by violin plot differentiating by our condition of interest.
+
+```
+
+
+## Indication : Cervix
+
+### Sites de prélèvement primaire uniquement
+
+Design 1 : ~ HPV16 + Arm + QC_uniq_aligned_cr + Batch + Purity_cr + best_response2 <br/>
+Design 2 : ~ HPV16 + Arm + QC_uniq_aligned_cr + Batch + Purity_cr + PFS_cr <br/>
+
+```{r DEGs Cervix primary}
+
+design_1 <- as.formula("~ HPV16 + Arm + QC_uniq_aligned_cr + Batch + Purity_cr + best_response2")
+design_2 <- as.formula("~ HPV16 + Arm + QC_uniq_aligned_cr + Batch + Purity_cr + PFS_cr")
+
+designs <- list(
+  design_1 = design_1,
+  design_2 = design_2
+)
+coefs <- list(
+  design_1 = "best_response2_SD_PD_vs_CR_PR",
+  design_2 = "PFS_cr"
+)
+
+selected_genes_list_Cervix <- list()
+norm.count_list_Cervix <- list()
+res_list_Cervix <- list()
+# resLFC_list <- list()
+# selected_genesLFC_list_Endo <- list()
+for (i in 1:2) {
+  design_name <- paste0("design_", i)
+  dds <- DESeqDataSetFromMatrix(
+    countData = count_matrix_Cervix_Primary,
+    colData = coldata_Cervix_Primary,
+    design = designs[[design_name]]
+  )
+  
+  dds <- DESeq(dds)
+  # dds_list[[design_name]] <- dds
+  
+  # norm.count <- as.data.frame(counts(dds_prepost, normalized=TRUE))
+  norm.count <- assay(vst(dds, blind=FALSE))
+  norm.count_list_Cervix[[design_name]] <- norm.count
+  
+  # connaître le dernier coef de dds
+  # resultsNames(dds)
+  
+  res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff) #, contrast=c("colX", "factor1", "factor2")) 
+  res_list_Cervix[[design_name]] <- res
+  # summary(res_prepost_1)
+  # design1 :  DEGs
+  # design2 :  DEGs
+  resOrdered <- res[order(res$padj), ]
+  selected_genes <- rownames(resOrdered[which(resOrdered$padj < padj.cutoff), ])
+  selected_genes_list_Cervix[[design_name]] <- selected_genes
+  
+  # resLFC <- lfcShrink(dds, coef=coefs[[design_name]], type="apeglm", lfcThreshold=lfc.cutoff)
+  # resLFC_list[[design_name]] <- resLFC
+  # summary(resLFC_1)
+  # resLFCordered <- resLFC[order(resLFC$svalue), ]
+  # selected_genesLFC <- rownames(resLFCordered[which(resLFCordered$svalue < padj.cutoff/10), ])
+  # selected_genesLFC_list_Endo[[design_name]] <- selected_genesLFC
+  
+  # checking the DESeq2 dispersion 
+  plotDispEsts(dds, main=paste("DESeq2 dispersion plot Cervix", design_name))
+  
+  # looking at the number of outliers
+  boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main=paste("Cooks' distance Cervix", design_name))
+  
+  # MA-plot
+  # plotMA(resLFC, ylim=c(-2,2), main=paste("plotMA Cervix", design_name))
+
+}
+
+venn(selected_genes_list_Cervix)
+
+# heatmaps des différents designs, en colorant par quelques variables d'intérêt
+arm_col <- rainbow(length(unique(coldata_Cervix_Primary$Arm)))
+names(arm_col) <- sort(unique(coldata_Cervix_Primary$Arm))
+hpv16_col <- c("grey","black")
+names(hpv16_col) <- c("0","1")
+bresp_col <- c("green", "darkgreen", "grey","red")
+names(bresp_col) <- c("CR", "PR","SD", "PD")
+PFS_col <- rainbow(length(unique(coldata_Cervix_Primary$PFS_cr)))
+names(PFS_col) <- sort(unique(coldata_Cervix_Primary$PFS_cr))
+column_ha = HeatmapAnnotation(
+    Arm=coldata_Cervix_Primary$Arm,
+    HPV16=coldata_Cervix_Primary$HPV16,
+    Best_response=coldata_Cervix_Primary$best_response,
+    PFS=coldata_Cervix_Primary$PFS_cr,
+    col=list(Arm=arm_col,HPV16=hpv16_col,Best_response=bresp_col,PFS=PFS_col
+    ))
+
+for ( i in 1:2 ) {
+  design_name <- paste0("design_", i)
+  DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list_Cervix[[design_name]], rownames(counts_genes))]
+  matrix_heatmap_Cervix <- norm.count_list_Cervix[[design_name]][which(rownames(norm.count_list_Cervix[[design_name]]) %in% selected_genes_list_Cervix[[design_name]]),]
+  rownames(matrix_heatmap_Cervix) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap_Cervix), rownames(counts_genes))], unique = T)
+  # heatmap.2(as.matrix(matrix_heatmap_Cervix), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
+  draw(Heatmap(as.matrix(matrix_heatmap_Cervix),
+                clustering_distance_columns  = "pearson",
+                clustering_method_columns = "ward.D2",
+                clustering_distance_rows  = "pearson",
+                clustering_method_rows = "ward.D2",
+                top_annotation = column_ha))
+}
+
+# Volcano plots without shrink
+for ( i in 1:2 ) {
+  design_name <- paste0("design_", i)
+  with(res_list_Cervix[[design_name]], plot(log2FoldChange, -log10(padj), pch=20, main=paste("Volcano plot Cervix design", i), cex=0.5))
+  with(subset(res_list_Cervix[[design_name]], padj<.05 ), points(log2FoldChange, -log10(padj), pch=20, col="red", cex=0.5))
+  with(subset(res_list_Cervix[[design_name]], abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="grey", cex=0.5))
+  with(subset(res_list_Cervix[[design_name]], padj <.05 & abs(log2FoldChange)>0.58), points(log2FoldChange, -log10(padj), pch=20, col="green", cex=0.5))
+}
+
+```
+
+
+
+# Conclusion et remarques (à modifier !!)
+
+.<br/>
+
+
+# Versions of all tools used in this analysis
+
+```{r session info}
+
+sessionInfo()
+
+```
