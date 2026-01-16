@@ -1,4 +1,4 @@
 *.gct
 *.tsv
 *.html
-./*/*/*.png
+**/*.png
