@@ -21,7 +21,7 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
-setwd(path)
+knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -105,6 +105,12 @@ coldata$HR <- ifelse(
   "neg",
   "pos"
 )
+coldata$HR_2 <- case_when(
+  coldata$Estrogen_endo == "0" ~ "E_neg",
+  coldata$Estrogen_endo == "1" ~ "E_pos",
+  coldata$Progesterone_endo == "0" ~ "P_neg",
+  coldata$Progesterone_endo == "1" ~ "P_pos",
+)
 # coldata <- subset( coldata, select = - c(xx, xx))
 
 # scale and center the numeric columns
@@ -156,7 +162,7 @@ coldata_Endo <- droplevels.data.frame(coldata_Endo)
 count_matrix_Endo <- count_matrix[, which(coldata_wo_rep$Indication == "Endo")]
 
 coldata_Cervix <- coldata_wo_rep[which(coldata_wo_rep$Indication == "Cervix"),]
-coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR, HR_2) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
 coldata_Cervix <- droplevels.data.frame(coldata_Cervix)
 count_matrix_Cervix <- count_matrix[, which(coldata_wo_rep$Indication == "Cervix")]
 
@@ -464,32 +470,243 @@ plot_sequential_results <- function(lrt_results, criterion = "padj_and_lfc") {
 # The barplot shows the final selection order and how many DEGs each variable contributed when it was added to the design.
 
 
+# # Run sequential selection
+# sequential_results <- test_variable_influence_lrt_sequential(
+#   count_matrix = count_matrix_Endo_Primary,
+#   coldata = coldata_Endo_Primary,
+#   variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HR", "HR_2", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
+#   nber_round = 5, # or NULL for all rounds
+#   padj_cutoff = 0.05,
+#   lfc_cutoff = 0.58
+# )
+# 
+# # View results table
+# # print(sequential_results$results)
+# 
+# # View selection order
+# print(sequential_results$selection_summary)
+# 
+# # Visualize
+# plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc")
+# # plot_selection_summary(sequential_results, criterion = "padj_and_lfc")
+# 
+# # Combined plot
+# # plot_sequential_results(sequential_results, criterion = "padj_and_lfc")
+# 
+# # # Save results
+# # write.csv(sequential_results$results, "sequential_lrt_results.csv", row.names = FALSE)
+# # write.csv(sequential_results$selection_summary, "variable_selection_order.csv", row.names = FALSE)
+
+```
+
+
+```{r forward selection strategy LRT with duplicates Endo}
+
+# Modification of test_variable_influence_lrt_sequential using the information of linked variables
+test_variable_influence_lrt_sequential_duplicates <- function(count_matrix,
+                                                   coldata,
+                                                   duplicates,
+                                                   variables = NULL,
+                                                   padj_cutoff = 0.05,
+                                                   lfc_cutoff = 0.58) {
+  
+  # Get all variables from coldata if not specified
+  if (is.null(variables)) {
+    variables <- colnames(coldata)
+  } else {
+    missing_vars <- setdiff(variables, colnames(coldata))
+    if (length(missing_vars) > 0) {
+      stop("These variables not found in coldata: ", paste(missing_vars, collapse = ", "))
+    }
+  }
+  duplicates_list <- do.call(c, duplicates)
+
+  # Storage for all results
+  all_rounds_results <- list()
+  selected_variables <- character()
+  remaining_variables <- variables
+  
+  round_num <- 1
+  check_zero_deg <- 1
+  
+  # Continue until all variables are tested
+  while (length(remaining_variables) > 0 & check_zero_deg == 1) {
+    
+    # cat("\n========================================\n")
+    # cat("ROUND", round_num, "\n")
+    # cat("========================================\n")
+    
+    if (round_num == 1) {
+      # cat("Testing variables alone (reduced = ~1)\n\n")
+      reduced_formula <- "~1"
+    } else {
+      # cat("Current design:", paste("~", paste(selected_variables, collapse = " + ")), "\n")
+      # cat("Testing addition of remaining variables\n\n")
+      reduced_formula <- paste("~", paste(selected_variables, collapse = " + "))
+    }
+    
+    # Storage for this round
+    round_results <- list()
+    skipped_tests <- list()
+    
+    # Test each remaining variable
+    for (var in remaining_variables) {
+      
+      if (round_num == 1) {
+        full_formula_str <- paste("~", var)
+        # cat("Testing:", var, "vs ~1\n")
+      } else {
+        full_formula_str <- paste("~", paste(c(var, selected_variables), collapse = " + "))
+        # cat("Testing:", var, "added to current design\n")
+      }
+      
+      # Check design validity
+      full_formula <- as.formula(full_formula_str)
+      rank_check <- check_design_rank(count_matrix, coldata, full_formula)
+      
+      if (!rank_check$is_valid) {
+        # cat("  SKIPPED: Design matrix not full rank\n")
+        skipped_tests[[var]] <- "Not full rank"
+        next
+      }
+      
+      tryCatch({
+        # Create dds
+        dds <- DESeqDataSetFromMatrix(
+          countData = count_matrix,
+          colData = coldata,
+          design = full_formula
+        )
+        
+        # Run LRT
+        dds_lrt <- DESeq(dds, test = "LRT", 
+                         reduced = as.formula(reduced_formula), 
+                         quiet = TRUE)
+        res <- results(dds_lrt)
+        
+        # Count DEGs
+        n_deg_padj <- sum(res$padj < padj_cutoff, na.rm = TRUE)
+        n_deg_both <- sum(res$padj < padj_cutoff & abs(res$log2FoldChange) >= lfc_cutoff, 
+                          na.rm = TRUE)
+        
+        round_results[[var]] <- data.frame(
+          round = round_num,
+          tested_variable = var,
+          current_design = ifelse(round_num == 1, "none", 
+                                  paste(selected_variables, collapse = " + ")),
+          full_model = full_formula_str,
+          reduced_model = reduced_formula,
+          n_deg_padj_only = n_deg_padj,
+          n_deg_padj_and_lfc = n_deg_both,
+          stringsAsFactors = FALSE
+        )
+        
+        # cat("  DEGs (padj):", n_deg_padj, "| DEGs (padj + LFC):", n_deg_both, "\n")
+        
+      }, error = function(e) {
+        # cat("  ERROR:", e$message, "\n")
+        skipped_tests[[var]] <- e$message
+      })
+    }
+    
+    # Combine results for this round
+    if (length(round_results) == 0) {
+      # cat("\nNo successful tests in this round. Stopping.\n")
+      break
+    }
+    
+    round_df <- do.call(rbind, round_results)
+    rownames(round_df) <- NULL
+    
+    # Select best variable (most DEGs with padj + LFC)
+    best_idx <- order(round_df$n_deg_padj_and_lfc, round_df$n_deg_padj_only, 
+                  decreasing = TRUE)[1] # which.max(round_df$n_deg_padj_and_lfc)
+    best_variable <- round_df$tested_variable[best_idx]
+    best_n_deg <- round_df$n_deg_padj_and_lfc[best_idx]
+        
+    if (sum(round_df$n_deg_padj_and_lfc) == 0 & sum(round_df$n_deg_padj_only) == 0) {
+      # cat("\nNo variable gave at least 1 DEG with the LRT method. Stopping.\n")
+      check_zero_deg <- 0
+    }
+    
+    # cat("\n--- ROUND", round_num, "SUMMARY ---\n")
+    # cat("Best variable:", best_variable, "with", best_n_deg, "DEGs\n")
+    
+    # Add to results
+    all_rounds_results[[paste0("round_", round_num)]] <- round_df
+    
+    # Update for next round
+    selected_variables <- c(best_variable, selected_variables)
+    if (best_variable %in% duplicates_list) {
+      which_sublist <- which(sapply(duplicates, function(x) best_variable %in% x))
+      remaining_variables <- setdiff(remaining_variables, duplicates[[which_sublist]])
+    }
+    else {
+      remaining_variables <- setdiff(remaining_variables, best_variable)
+    }
+    
+    round_num <- round_num + 1
+  }
+  
+  # Combine all rounds
+  final_results <- do.call(rbind, all_rounds_results)
+  rownames(final_results) <- NULL
+  
+  # Summary
+  # cat("\n========================================\n")
+  # cat("FINAL SUMMARY\n")
+  # cat("========================================\n")
+  # cat("Variables selected in order:\n")
+  for (i in seq_along(selected_variables)) {
+    var_info <- final_results[final_results$round == i & 
+                                final_results$tested_variable == rev(selected_variables)[i], ]
+    # cat(i, ".", rev(selected_variables)[i], "- DEGs:", 
+    #     var_info$n_deg_padj_and_lfc, "\n")
+  }
+  
+  # cat("\nFinal design:", paste("~", paste(selected_variables, collapse = " + ")), "\n")
+  
+  return(list(
+    results = final_results,
+    selected_order = rev(selected_variables),
+    selection_summary = data.frame(
+      rank = 1:length(selected_variables),
+      variable = rev(selected_variables),
+      n_deg = sapply(rev(selected_variables), function(v) {
+        final_results[final_results$tested_variable == v, "n_deg_padj_and_lfc"][1]
+      })
+    )
+  ))
+}
+
+
+duplicates <- list()
+duplicates$QC <- c("QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr")
+duplicates$purity <- c("Purity_cr", "CT_perc_cr")
+duplicates$HR <- c("HR", "HR_2")
+duplicates$var_interest <- c("OS_cr", "PFS_cr")
+duplicates$clinical_patient <- c("ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr")
+duplicates$clinical_ante <- c("Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr")
+duplicates$clinical_resp <- c("Death_status", "Prog_status", "best_response")
+
 # Run sequential selection
-sequential_results <- test_variable_influence_lrt_sequential(
+sequential_results <- test_variable_influence_lrt_sequential_duplicates(
   count_matrix = count_matrix_Endo_Primary,
   coldata = coldata_Endo_Primary,
-  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HR", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
-  nber_round = 5, # or NULL for all rounds
+  duplicates = duplicates,
+  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HR", "HR_2", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
   padj_cutoff = 0.05,
   lfc_cutoff = 0.58
 )
 
 # View results table
-print(sequential_results$results)
+# print(sequential_results$results)
 
 # View selection order
 print(sequential_results$selection_summary)
 
 # Visualize
 plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc")
-# plot_selection_summary(sequential_results, criterion = "padj_and_lfc")
-
-# Combined plot
-# plot_sequential_results(sequential_results, criterion = "padj_and_lfc")
-
-# # Save results
-# write.csv(sequential_results$results, "sequential_lrt_results.csv", row.names = FALSE)
-# write.csv(sequential_results$selection_summary, "variable_selection_order.csv", row.names = FALSE)
 
 ```
 
@@ -499,18 +716,28 @@ plot_sequential_selection_heatmap(sequential_results, criterion = "padj_and_lfc"
 
 ```{r forward selection strategy LRT Cervix}
 
+duplicates$HPV <- c("HPV16", "HPV_all")
+
 # Run sequential selection
-sequential_results <- test_variable_influence_lrt_sequential(
+# sequential_results <- test_variable_influence_lrt_sequential(
+#   count_matrix = count_matrix_Cervix_Primary,
+#   coldata = coldata_Cervix_Primary,
+#   variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HPV16", "HPV_all", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
+#   nber_round = 5, # or NULL for all rounds
+#   padj_cutoff = 0.05,
+#   lfc_cutoff = 0.58
+# )
+sequential_results <- test_variable_influence_lrt_sequential_duplicates(
   count_matrix = count_matrix_Cervix_Primary,
   coldata = coldata_Cervix_Primary,
-  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HPV16", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
-  nber_round = 5, # or NULL for all rounds
+  duplicates = duplicates,
+  variables = c("Arm", "Batch", "Death_status", "Prog_status", "best_response", "Nber_Prior_chemo", "ecog", "Age_cr", "Height_cr", "Weight_cr", "BMI_cr", "OS_cr", "PFS_cr", "Cycles_NP137_cr", "Cycles_carboplatin_cr", "Cycles_paclitaxel_cr", "Cycles_pembrolizumab_cr", "Purity_cr", "CT_perc_cr", "HPV16", "HPV_all", "QC_duplication_perc_cr", "QC_alignedM_Salmon_cr", "QC_uniq_aligned_cr"),  # or NULL for all
   padj_cutoff = 0.05,
   lfc_cutoff = 0.58
 )
 
 # View results table
-print(sequential_results$results)
+# print(sequential_results$results)
 
 # View selection order
 print(sequential_results$selection_summary)

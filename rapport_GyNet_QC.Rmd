@@ -21,7 +21,8 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
-setwd(path)
+# setwd(path)
+knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -105,6 +106,12 @@ coldata$HR <- ifelse(
   "neg",
   "pos"
 )
+coldata$HR_2 <- case_when(
+  coldata$Estrogen_endo == "0" ~ "E_neg",
+  coldata$Estrogen_endo == "1" ~ "E_pos",
+  coldata$Progesterone_endo == "0" ~ "P_neg",
+  coldata$Progesterone_endo == "1" ~ "P_pos",
+)
 # coldata <- subset( coldata, select = - c(xx, xx))
 
 # scale and center the numeric columns
@@ -152,7 +159,7 @@ count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 count_matrix_genesymbol <- count_matrix
 rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
 count_matrix_pcg_genesymbol <- count_matrix_pcg
-rownames(count_matrix_pcg_genesymbol) <- counts_genes[which(rownames(counts_genes) %in% rownames(count_matrix_pcg)), 'gene_name']
+rownames(count_matrix_pcg_genesymbol) <- counts_genes[match(rownames(count_matrix_pcg_genesymbol), rownames(counts_genes), nomatch = 0),'gene_name']
 # duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function)
 count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
 count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
@@ -205,7 +212,9 @@ dds_gene_symbol <- DESeqDataSetFromMatrix(
 )
 dds_gene_symbol <- DESeq(dds_gene_symbol)
 norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
-norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
 dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
   countData = count_matrix_pcg_genesymbol,
@@ -214,17 +223,19 @@ dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
 )
 dds_pcg_gene_symbol <- DESeq(dds_pcg_gene_symbol)
 norm.count_pcg_genesymbol <- as.data.frame(counts(dds_pcg_gene_symbol, normalized=TRUE))
-norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_pcg_genesymbol)),'gene_length'])
+# norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_pcg_genesymbol)),'gene_length'])
+gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_pcg_genesymbol), counts_genes$gene_name)]
+norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
 
-# write.table(norm.count_genesymbol_K,"./norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
-# write.table(norm.count_pcg_genesymbol_K,"./norm.count_pcg_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+# write.table(norm.count_genesymbol_K,"./scripts/Mehlen_Gynet_scripts/norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
+# write.table(norm.count_pcg_genesymbol_K,"./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
 # /!\ il faut modifier le fichier pour décaler les noms de samples et ajouter "GeneSymbol" comme nom de la première colonne
 
 # Purity scores (package estimate)
-# GyNey_Expr <- system.file("extdata", "./count_matrix_genesymbol_pcg.tsv", package="estimate")
-estimate::filterCommonGenes(input.f = "./norm.count_pcg_genesymbol_K.tsv", output.f = "norm.count_pcg_genesymbol_K.gct", id="GeneSymbol")
-estimate::estimateScore("norm.count_pcg_genesymbol_K.gct", "OV_estimate_score_pcg.gct", platform = "illumina")
-# estimate::plotPurity(scores="OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
+# GyNey_Expr <- system.file("extdata", "./scripts/Mehlen_Gynet_scripts/count_matrix_genesymbol_pcg.tsv", package="estimate")
+estimate::filterCommonGenes(input.f = "./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.tsv", output.f = "./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.gct", id="GeneSymbol")
+estimate::estimateScore("./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.gct", "./scripts/Mehlen_Gynet_scripts/OV_estimate_score_pcg.gct", platform = "illumina")
+# estimate::plotPurity(scores="./scripts/Mehlen_Gynet_scripts/OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
 
 # Plotting Estimate scores
 read_estimate_scores <- function(gct_file) {
@@ -242,7 +253,7 @@ read_estimate_scores <- function(gct_file) {
   return(scores_df)
 }
 
-estimate_scores <- read_estimate_scores("OV_estimate_score_pcg.gct")
+estimate_scores <- read_estimate_scores("./scripts/Mehlen_Gynet_scripts/OV_estimate_score_pcg.gct")
 
 # Calculate tumor purity using the formula from the ESTIMATE paper: Purity = cos(0.6049872018 + 0.0001467884 * ESTIMATE score)
 calculate_tumor_purity <- function(estimate_scores) {

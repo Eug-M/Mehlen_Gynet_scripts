@@ -21,7 +21,7 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
-setwd(path)
+knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -169,7 +169,7 @@ Cet essai comporte 168 patients, dont 101 pour un cancer de l'endomètre et 67 p
 # coldata_gynet <- clinic_raw[match(samplesheet$sample, clinic_raw$SampleID), c("SampleID", "Indication", "Arm", "Age", "Weight", "Height", "Date_traitement", "Death_status", "OS", "Prog_status", "PFS", "best_response", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Nber_Prior_chemo", "Mut_Status_endo", "ecog", "Estrogen_endo", "Progesterone_endo")]
 # coldata_gynet = coldata_gynet[order(coldata_gynet$SampleID), ]
 # 
-# # Saving coldata_gynet for further reports
+# # Saving coldata_gynet for further reports (/!\ do NOT run this, I've modified this file afterwards, to add columns)
 # # write.csv(coldata_gynet,"./coldata_GyNet.csv", row.names = F)
 
 coldata_gynet <- read.csv('./coldata_GyNet.csv', sep=",")
@@ -247,6 +247,10 @@ counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.ts
                      sep = "\t",
                      check.names = FALSE)
 count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
+# on modifie le gene_name pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt Hallmark EMT
+counts_genes[which(row.names(counts_genes)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
+counts_genes[which(row.names(counts_genes)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
+counts_genes[which(row.names(counts_genes)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
 # we need integers for DESeq2
 counts_genes[count_columns] <- round(counts_genes[count_columns])
 #counts_genes <- as.matrix(counts_genes)
@@ -277,7 +281,7 @@ count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 count_matrix_genesymbol <- count_matrix
 rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
 count_matrix_pcg_genesymbol <- count_matrix_pcg
-rownames(count_matrix_pcg_genesymbol) <- counts_genes[which(rownames(counts_genes) %in% rownames(count_matrix_pcg)), 'gene_name']
+rownames(count_matrix_pcg_genesymbol) <- counts_genes[match(rownames(count_matrix_pcg_genesymbol), rownames(counts_genes), nomatch = 0),'gene_name']
 # duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function ...)
 count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
 count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
@@ -298,7 +302,9 @@ dds_gene_symbol <- DESeqDataSetFromMatrix(
 )
 dds_gene_symbol <- DESeq(dds_gene_symbol)
 norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
-norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
 genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent 
 expression_genes <- norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% genes_of_interest),]
@@ -1078,7 +1084,7 @@ coldata_gynet$Hallmark_s_level <- case_when(
   coldata_gynet$Hallmark_score < median(coldata_gynet$Hallmark_score) ~ "Low")
 
 km_fit_os <- survfit(Surv(OS, Death_status) ~ Hallmark_s_level, data=coldata_gynet)
-legend_order <- gsub("Mak_s_level=", "", names(km_fit_os$strata))
+legend_order <- gsub("Hallmark_s_level=", "", names(km_fit_os$strata))
 survminer::ggsurvplot(
   km_fit_os, 
   data = coldata_gynet,          # again specify the data used to fit linelistsurv_fit_sex 
