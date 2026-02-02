@@ -86,6 +86,7 @@ library(txdbmaker)
 library("rtracklayer")
 library("ComplexHeatmap")
 library(circlize)
+library(conflicted)
 ```
 
 # Objectif
@@ -833,6 +834,7 @@ plot_km_corrected <- function(data_all, arms, gene_column, indication, type = 'O
     formula_surv <- as.formula(paste("Surv(PFS, Prog_status) ~", col_level))
     y_lab = "Progression Free Survival"
   }
+  tryCatch({
   # Fit KM
   km_fit <- surv_fit(formula_surv, data = data[which(data$Indication == indication),])
   # Calculate p-value
@@ -877,6 +879,10 @@ plot_km_corrected <- function(data_all, arms, gene_column, indication, type = 'O
     paste(legend_order[2], ':', median(km_fit)[2])
   )
   return(list(plot = p1, message = msg))
+  }, error = function(e) {
+        cat("  ERROR:", e$message, "\n")
+        return(list(plot = NULL, message = e$message))
+      })
 }
 
 # Use the function for each gene 

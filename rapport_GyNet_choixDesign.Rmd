@@ -81,6 +81,7 @@ library("reshape2")
 library("tidyr")
 library("splines")
 library(viridis)
+library(conflicted)
 # install.packages("estimate", repos="http://R-Forge.R-project.org")
 
 '%!in%' <- function(x,y)!('%in%'(x,y))

@@ -88,6 +88,7 @@ library("splines")
 library("ComplexHeatmap")
 library(circlize)
 library(viridis)
+library(conflicted)
 # install.packages("estimate", repos="http://R-Forge.R-project.org")
 
 '%!in%' <- function(x,y)!('%in%'(x,y))

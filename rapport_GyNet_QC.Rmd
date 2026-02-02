@@ -85,6 +85,7 @@ library(reshape2)
 library(estimate)
 library(tibble)
 library(txdbmaker)
+library(conflicted)
 
 '%!in%' <- function(x,y)!('%in%'(x,y))
 ```
@@ -133,7 +134,8 @@ counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.ts
 count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
 # we need integers for DESeq2
 counts_genes[count_columns] <- round(counts_genes[count_columns])
-#counts_genes <- as.matrix(counts_genes)
+# we only study the genes with expression not always null
+counts_genes <- counts_genes[rowSums(counts_genes[, count_columns] != 0) > 0, ]
 count_matrix <- as.matrix(counts_genes[, count_columns])
 
 # adding gene length to counts_genes
@@ -234,7 +236,7 @@ norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
 # Purity scores (package estimate)
 # GyNey_Expr <- system.file("extdata", "./scripts/Mehlen_Gynet_scripts/count_matrix_genesymbol_pcg.tsv", package="estimate")
 estimate::filterCommonGenes(input.f = "./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.tsv", output.f = "./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.gct", id="GeneSymbol")
-estimate::estimateScore("./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.gct", "./scripts/Mehlen_Gynet_scripts/OV_estimate_score_pcg.gct", platform = "illumina")
+estimate::estimateScore("./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.gct", "./scripts/Mehlen_Gynet_scripts/OV_estimate_score_pcg.gct", platform = "illumina") # Rq: si on met "affymetrix" au lieu de "illumina", ça donne exactement les mêmes scores de Purity
 # estimate::plotPurity(scores="./scripts/Mehlen_Gynet_scripts/OV_estimate_score.gct", samples="all_samples", platform="illumina") # ne fonctionne pas, on fait les plot autrement :
 
 # Plotting Estimate scores
@@ -1585,7 +1587,7 @@ ggplot(variance_results, aes(x = n_genes, y = variance_explained)) +
 
 ```
 
-Bien que la courbe ait une forme particulière, on peut choisir 1000 gènes (méthode elbow). 
+Bien que la courbe ait une forme particulière, on peut choisir 900 gènes (méthode elbow). 
 
 <br/>
 <br/>
@@ -1594,7 +1596,7 @@ Bien que la courbe ait une forme particulière, on peut choisir 1000 gènes (mé
 
 ```{r PCA Endo variants ax1-2 v1, fig.width=13, fig.height=10}
 
-nber_top_genes <- 1000
+nber_top_genes <- 900
 
 plot_list <- list()
 for (column in to_be_plotted) {
@@ -1876,7 +1878,7 @@ ggpairs(rld_mat_500[,1:4])
 ```{r data overview Cervix}
 
 coldata_Cervix <- coldata[which(coldata$Indication == "Cervix"),]
-coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
+coldata_Cervix <- subset( coldata_Cervix, select = -c(Indication, Mut_Status_endo, Estrogen_endo, Progesterone_endo, HR, HR_2) ) # colonne qui ne prend qu'une valeur et colonnes qui n'ont que des NA
 count_matrix_Cervix <- count_matrix[, which(coldata$Indication == "Cervix")]
 
 dds <- DESeqDataSetFromMatrix(

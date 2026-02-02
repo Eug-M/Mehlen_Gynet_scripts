@@ -21,7 +21,8 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
-setwd(path)
+# setwd(path)
+knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
@@ -87,6 +88,7 @@ library("rtracklayer")
 library("ComplexHeatmap")
 library(circlize)
 library(ggpubr)
+library(conflicted)
 ```
 
 # Objectif
@@ -163,10 +165,10 @@ count_matrix_woUMI <- count_matrix_woUMI[,which(colnames(count_matrix_woUMI) %in
 count_matrix_woUMI_pcg <- count_matrix_woUMI_pcg[,which(colnames(count_matrix_woUMI_pcg) %in% count_columns)]
 
 # keeping only the genes in common between with and without UMIs (in the same order)
-common_genes <- intersect(rownames(count_matrix_woUMI), rownames(count_matrix_UMI))
+common_genes <- base::intersect(rownames(count_matrix_woUMI), rownames(count_matrix_UMI))
 count_matrix_woUMI_aligned <- count_matrix_woUMI[common_genes, ]
 count_matrix_UMI_aligned <- count_matrix_UMI[common_genes, ]
-common_genes_pcg <- intersect(rownames(count_matrix_woUMI_pcg), rownames(count_matrix_UMI_pcg))
+common_genes_pcg <- base::intersect(rownames(count_matrix_woUMI_pcg), rownames(count_matrix_UMI_pcg))
 count_matrix_woUMI_pcg_aligned <- count_matrix_woUMI_pcg[common_genes_pcg, ]
 count_matrix_UMI_pcg_aligned <- count_matrix_UMI_pcg[common_genes_pcg, ]
 
@@ -313,6 +315,18 @@ p <- ggplot(df_plot, aes(x = alignment1, y = alignment2)) +
   coord_fixed()
 print(p)
 
+
+# studying some genes below the red dashed line
+genes_per_sample <- list()
+for (sample in colnames(count_matrix_UMI_pcg_aligned)) {  
+  dataframe <- data.frame(as.vector(as.matrix(log2(count_matrix_UMI_pcg_aligned[, sample]+1))), as.vector(as.matrix(log2(count_matrix_woUMI_pcg_aligned[, sample]+1))))
+  row.names(dataframe) <- common_genes_pcg
+  colnames(dataframe) <- c("UMI", "woUMI")
+  if (dim(dataframe[which(dataframe$UMI > 15 & dataframe$woUMI < 15),])[1] > 0) {
+    genes_per_sample[[sample]] <- row.names(dataframe[which(dataframe$UMI > 15 & dataframe$woUMI < 15),])
+  }
+}
+
 ```
 
 <br/>
@@ -329,7 +343,7 @@ counts_genes_gynet <- read.table("/home/eugenie-modolo/Documents/Gynet/results_r
                      sep = "\t",
                      check.names = FALSE)
 
-count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name"]
+# count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name"] # on ne garde que les samples en commun
 # besoin de prendre les integers pour DESeq2
 counts_genes_gynet[count_columns] <- round(counts_genes_gynet[count_columns])
 count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
@@ -342,7 +356,7 @@ count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "g
 count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
 rownames(count_matrix_gynet) <- counts_genes_gynet$feature
 
-coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
+# coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
 
 # normalisation des counts par DESeq2
 dds_gynet <- DESeqDataSetFromMatrix(
