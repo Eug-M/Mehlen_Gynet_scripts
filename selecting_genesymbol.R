@@ -1,13 +1,16 @@
 # Strategy for resolution of gene symbols (e.g. for GSEA) which correspond to several Ensembl id in counts_genes, in order of priority:
-# 1. Prefer genes in keep_biotype over others
-# 2. Prefer canonical chromosomes (1-22, X, Y) over patches/scaffolds
-# 3. Prefer genes with RefSeq matches
-# 4. If none of the above, sum counts for duplicate symbols
+# 1. Prefer non-pseudogenes over pseudogenes
+# 2. Prefer genes in keep_biotype over others
+# 3. Prefer canonical chromosomes (1-22, X, Y) over patches/scaffolds
+# 4. Prefer genes with RefSeq matches
+# 5. If none of the above, sum counts for duplicate symbols
 
 
 
 library(biomaRt)
 library(dplyr)
+library(stringr)
+
 
 
 create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
@@ -17,6 +20,7 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
   # Add resolution criteria
   gene_info_scored <- gene_info %>%
     mutate(
+      is_not_pseudogene = !str_detect(gene_biotype, ".*pseudogene.*"),
       is_correct_biotype = gene_biotype %in% keep_biotype,
       is_main_chr = chromosome_name %in% c(1:22, "X", "Y", "MT"),
       has_refseq = !is.na(refseq_mrna) & refseq_mrna != "",
@@ -40,6 +44,7 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
     group_by(external_gene_name) %>%
     arrange(
       external_gene_name,
+      desc(is_not_pseudogene),
       desc(is_correct_biotype),
       desc(has_refseq),
       desc(is_main_chr),
@@ -48,11 +53,18 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
     mutate(
       rank = row_number(),
       # Check if top-ranked gene is unique
-      top_biotype = first(is_correct_biotype),
-      top_refseq = first(has_refseq),
-      top_chr = first(is_main_chr),
+      top_pseudogene = dplyr::first(is_not_pseudogene),
+      # top_pseudogene = is_not_pseudogene,
+      top_biotype = dplyr::first(is_correct_biotype),
+      # top_biotype = is_correct_biotype,
+      # top_biotype = Reduce(`|`, select(., is_correct_biotype)),
+      top_refseq = dplyr::first(has_refseq),
+      # top_refseq = has_refseq,
+      top_chr = dplyr::first(is_main_chr),
+      # top_chr = is_main_chr,
       # Count how many genes share the top score
-      n_tied = sum(is_correct_biotype == top_biotype & 
+      n_tied = sum(is_not_pseudogene == top_pseudogene & 
+                     is_correct_biotype == top_biotype & 
                      has_refseq == top_refseq & 
                      is_main_chr == top_chr)
     ) %>%
@@ -98,7 +110,7 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
   mapping_merged <- still_tied %>%
     group_by(external_gene_name) %>%
     summarise(
-      final_gene_id = paste0(first(external_gene_name), "_merged"),
+      final_gene_id = paste0(dplyr::first(external_gene_name), "_merged"),
       ensembl_ids_to_use = paste(ensembl_gene_id_version, collapse = ";"),
       resolution_strategy = "summed",
       n_genes_merged = n(),
@@ -158,7 +170,7 @@ gene_info <- getBM(
     # 'transcript_biotype',             # Transcript type
     'transcript_is_canonical',        # Ensembl Canonical
     'refseq_mrna',                    # RefSeq mRNA
-    'chromosome_name'                # Chromosome/scaffold name
+    'chromosome_name'                 # Chromosome/scaffold name
     # 'transcript_mane_plus_clinical',  # RefSeq match transcript (MANE Plus Clinical) 
     # 'transcript_mane_select',         # RefSeq match transcript (MANE Select)
     # 'external_gene_source',           # Source of gene name
@@ -208,7 +220,7 @@ keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gen
 mapping <- create_gene_symbol_mapping(
   gene_info_summarized, 
   keep_biotype, 
-  output_file = "/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping.csv"
+  output_file = "/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv"
 )
 
 
@@ -228,7 +240,7 @@ apply_gene_symbol_mapping <- function(count_matrix, mapping_file) {
   cat("Mapping contains", nrow(mapping), "gene symbols\n")
   cat("Count matrix contains", nrow(count_matrix), "genes\n\n")
   
-  # gene_name <- mapping$external_gene_name[i] /!\ à changer ci-dessous
+  # gene_name <- mapping$external_gene_name[i] 
   # Pre-compute which IDs exist in count_matrix 
   available_ids <- rownames(count_matrix)
   available_set <- as.list(setNames(rep(TRUE, length(available_ids)), available_ids))
@@ -303,7 +315,7 @@ count_matrix_resolved <- apply_gene_symbol_mapping(
 
 
 
-# Testing the compatibility between the genes biotypes from Ensembl and gtf annotation (from Gencode) /!\ il y a eu une erreur à la fin !
+# Testing the compatibility between the genes' biotypes from Ensembl and gtf annotation (from Gencode) 
 gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
 gtf_df <- as.data.frame(gtf)
 for (ensbl_id in gene_info$gene_id) {

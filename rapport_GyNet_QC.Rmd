@@ -210,7 +210,7 @@ boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers 
 dds_gene_symbol <- DESeqDataSetFromMatrix(
   countData = count_matrix_genesymbol,
   colData = coldata,
-  design = ~ Arm
+  design = ~ 1
 )
 dds_gene_symbol <- DESeq(dds_gene_symbol)
 norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
@@ -221,7 +221,7 @@ norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
   countData = count_matrix_pcg_genesymbol,
   colData = coldata,
-  design = ~ Arm
+  design = ~ 1
 )
 dds_pcg_gene_symbol <- DESeq(dds_pcg_gene_symbol)
 norm.count_pcg_genesymbol <- as.data.frame(counts(dds_pcg_gene_symbol, normalized=TRUE))

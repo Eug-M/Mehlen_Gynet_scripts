@@ -21,6 +21,7 @@ editor_options:
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
+# setwd(path)
 knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
@@ -230,7 +231,7 @@ ggplot(coldata_gynet,
 # dds_gynet <- DESeqDataSetFromMatrix(
 #   countData = count_matrix_gynet,
 #   colData = coldata_gynet,
-#   design = ~ Arm
+#   design = ~ 1
 # )
 # dds_gynet <- DESeq(dds_gynet)
 # norm.count_gynet <- as.data.frame(counts(dds_gynet, normalized=TRUE))
@@ -290,7 +291,7 @@ count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(coun
 dds <- DESeqDataSetFromMatrix(
   countData = count_matrix,
   colData = coldata_gynet,
-  design = ~ Arm
+  design = ~ 1
 )
 dds <- DESeq(dds)
 norm.count_gynet <- as.data.frame(counts(dds, normalized=TRUE))
@@ -299,7 +300,7 @@ norm.count_gynet <- as.data.frame(counts(dds, normalized=TRUE))
 dds_gene_symbol <- DESeqDataSetFromMatrix(
   countData = count_matrix_genesymbol,
   colData = coldata_gynet,
-  design = ~ Arm
+  design = ~ 1
 )
 dds_gene_symbol <- DESeq(dds_gene_symbol)
 norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))

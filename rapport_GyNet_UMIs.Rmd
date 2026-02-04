@@ -362,7 +362,7 @@ rownames(count_matrix_gynet) <- counts_genes_gynet$feature
 dds_gynet <- DESeqDataSetFromMatrix(
   countData = count_matrix_gynet,
   colData = coldata_gynet,
-  design = ~ Arm
+  design = ~ 1
 )
 dds_gynet <- DESeq(dds_gynet)
 norm.count_gynet <- as.data.frame(counts(dds_gynet, normalized=TRUE))
