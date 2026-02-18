@@ -86,6 +86,7 @@ library(estimate)
 library(tibble)
 library(txdbmaker)
 library(conflicted)
+library(MCPcounter) # pour aide Mcp-counter: ?MCPcounter.estimate
 
 '%!in%' <- function(x,y)!('%in%'(x,y))
 ```
@@ -116,7 +117,7 @@ coldata$HR_2 <- case_when(
 # coldata <- subset( coldata, select = - c(xx, xx))
 
 # scale and center the numeric columns
-numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity_Estimate', 'Purity_PUREE', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
 for (numeric_col in numeric_columns) {
   coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
 }
@@ -417,20 +418,69 @@ lmp <- function (modelobject) {
 }
 # pvalue <- paste("pvalue =", lmp(lm(Purity ~ CT_perc, coldata)))
 # r2 <- paste("R2 =", round(summary(lm(Purity ~ CT_perc, coldata))$r.squared, 2))
-lm_eqn <- function(df){
-    m <- lm(Purity ~ CT_perc, df);
+lm_eqn <- function(df, y_col, x_col){
+    m <- lm(as.formula(paste(y_col, "~", x_col)), df);
     eq <- substitute(italic(r)^2~"="~r2*","~~italic(p-value)~"="~pval, 
          list(r2 = format(summary(m)$r.squared, digits = 2),
               pval = format(lmp(m), digits=2)))
     as.character(as.expression(eq));
 }
 
-ggplot(coldata, aes(x=CT_perc, y=Purity)) +
+ggplot(coldata, aes(x=CT_perc, y=Purity_Estimate)) +
     geom_point() +
     geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
-    geom_text(x = 25, y = 1, label = lm_eqn(coldata), parse = TRUE)
+    geom_text(x = 25, y = 1, label = lm_eqn(coldata, "Purity_Estimate", "CT_perc"), parse = TRUE) +
+    labs(title = "Anapath Tumor Purity vs ESTIMATE Score")
 
-# PUREE score ???
+
+# PUREE score 
+
+# # creating the file for PUREE (genes as columns, Ensembl without .x)
+# counts_genes_puree <- t(counts_genes[, count_columns])
+# colnames(counts_genes_puree) <- sub("\\..*", "", rownames(counts_genes))
+# write.csv(counts_genes_puree, file = './scripts/PUREE/counts_Gynet_puree.csv')
+# # /!\ then run the python PUREE package using the commands in file ~/Documents/Gynet/scripts/Mehlen_Gynet_scripts/using_puree.ipynb
+
+# reading the scores
+puree_scores <- read.table("./scripts/PUREE/puree_result_Gynet.tsv", 
+                     header = TRUE, 
+                     row.names = 1, 
+                     sep = "\t",
+                     check.names = FALSE)
+puree_scores <- puree_scores %>%
+    rownames_to_column("Sample")
+puree_scores$Cohort <- case_when(
+  coldata$Indication == 'Endo' & coldata$Arm == 'A' ~ "Endo_A",
+  coldata$Indication == 'Endo' & coldata$Arm == 'B' ~ "Endo_B",
+  coldata$Indication == 'Endo' & coldata$Arm == 'C' ~ "Endo_C",
+  coldata$Indication == 'Endo' & coldata$Arm == 'D' ~ "Endo_D",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'A' ~ "Cervix_A",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'B' ~ "Cervix_B",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'C' ~ "Cervix_C",
+  coldata$Indication == 'Cervix' & coldata$Arm == 'D' ~ "Cervix_D"
+)
+
+ggplot(puree_scores, aes(x = reorder(Sample, purity), y = purity, fill = Cohort)) +
+    # geom_bar(stat = "identity") +
+    geom_col() +
+    labs(title = "PUREE Tumor Purity by Sample",
+         x = "Sample",
+         y = "Tumor Purity") +
+    ylim(0, 1) +
+    # theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(coldata, aes(x=CT_perc, y=Purity_PUREE)) +
+    geom_point() +
+    geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
+    geom_text(x = 25, y = 0.9, label = lm_eqn(coldata, "Purity_PUREE", "CT_perc"), parse = TRUE) +
+    labs(title = "Anapath Tumor Purity vs PUREE Score")
+
+ggplot(coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
+    geom_point() +
+    geom_smooth(method=lm , color="red", fill="#69b3a2", se=TRUE) +
+    geom_text(x = 0.5, y = 0.9, label = lm_eqn(coldata, "Purity_PUREE", "Purity_Estimate"), parse = TRUE) +
+    labs(title = "ESTIMATE Score vs PUREE Score")
 
 ```
 
@@ -439,7 +489,20 @@ ggplot(coldata, aes(x=CT_perc, y=Purity)) +
 ```{r deconvolution}
 
 # MCP-counter
+new_counts_genes <- counts_genes[, count_columns]
+rownames(new_counts_genes) <- sub("\\..*", "", rownames(counts_genes))
+Estimates <- MCPcounter.estimate(new_counts_genes, featuresType = "ENSEMBL_ID")
+heatmap(as.matrix(Estimates),col=colorRampPalette(c("blue","white","red"))(100)) 
 
+# test !
+toto <- matrix(0, nrow = length(count_columns), ncol=1)
+rownames(toto) <- count_columns
+colnames(toto) <- "purity_mcp"
+for (sample in count_columns) {
+     toto[sample, 'purity_mcp'] <- Estimates["Fibroblasts", sample] / sum(Estimates[, sample])
+}
+
+plot(toto, estimate_scores$TumorPurity) # pas du tout de corrélation ! -> demander à Nico quelle ligne de Estimates je dois utiliser
 
 ```
 

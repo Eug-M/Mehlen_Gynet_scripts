@@ -92,7 +92,7 @@ library(conflicted)
 
 # Objectif
 
-Etudier le lien entre les niveaux d'expression de la Netrin1 et ses récepteurs principaux, et la survie sur les données GyNet.<br/>
+Etudier le lien entre les niveaux d'expression de la Netrin1 et ses récepteurs principaux, et la survie, sur les données GyNet.<br/>
 <br/>
 Cet essai comporte 168 patients, dont 101 pour un cancer de l'endomètre et 67 pour un cancer du cervix. Les deux groupes ont été séparés en 4 bras randomisés : <br/>
 - bras  A (chimiothérapie seule) : traités au Carboplatin & Paclitaxel ;<br/>
