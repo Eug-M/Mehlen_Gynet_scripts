@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 ---
 title: "GyNet Choix Design - étude des données avant DESeq2"
 author: "Eugénie Modolo"

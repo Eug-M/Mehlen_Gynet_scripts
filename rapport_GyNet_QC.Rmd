@@ -1,3 +1,9 @@
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 ---
 title: "GyNet QC - étude des données avant DESeq2"
 author: "Eugénie Modolo"
@@ -89,6 +95,95 @@ library(conflicted)
 library(MCPcounter) # pour aide Mcp-counter: ?MCPcounter.estimate
 
 '%!in%' <- function(x,y)!('%in%'(x,y))
+
+apply_gene_symbol_mapping <- function(count_matrix, mapping_file, df_genelengths = NULL) {
+  
+  # cat("=== APPLYING GENE SYMBOL MAPPING TO COUNT MATRIX ===\n\n")
+  
+  # Read mapping if it's a file path
+  if (is.character(mapping_file)) {
+    mapping <- read.csv(mapping_file, stringsAsFactors = FALSE)
+  } else {
+    mapping <- mapping_file
+  }
+  
+  # cat("Mapping contains", nrow(mapping), "gene symbols\n")
+  # cat("Count matrix contains", nrow(count_matrix), "genes\n\n")
+  
+  # gene_name <- mapping$external_gene_name[i] 
+  # Pre-compute which IDs exist in count_matrix 
+  available_ids <- rownames(count_matrix)
+  available_set <- as.list(setNames(rep(TRUE, length(available_ids)), available_ids))
+  
+  # Separate regular and merged
+  # is_merged <- grepl("_merged", mapping$final_gene_id)
+  is_merged <- mapping$resolution_strategy == 'summed'
+  regular_genes <- mapping[!is_merged, ]
+  merged_genes <- mapping[is_merged, ]
+  
+  # Process regular genes 
+  regular_ids_to_keep <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'final_gene_id']
+  # regular_ids_to_keep <- regular_genes$final_gene_id[regular_genes$final_gene_id %in% available_ids]
+  
+  if (is.null(df_genelengths)) {
+    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
+  } else {
+    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
+    new_matrix$gene_lengths <- df_genelengths$gene_length[match(regular_ids_to_keep, rownames(df_genelengths))]
+  }
+  rownames(new_matrix) <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'external_gene_name']
+  # rownames(new_matrix) <- regular_genes$external_gene_name[regular_genes$final_gene_id %in% available_ids]
+  
+  # cat("Kept", length(regular_ids_to_keep), "regular genes\n")
+  
+  # Process merged genes (only if they exist)
+  if (nrow(merged_genes) > 0) {
+    # cat("Processing", nrow(merged_genes), "merged genes...\n")
+    
+    # Pre-allocate matrix
+    n_samples <- ncol(count_matrix)
+    if (is.null(df_genelengths)) {
+      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples,
+                            dimnames = list(merged_genes$external_gene_name,
+                                            colnames(count_matrix))))
+    } else {
+      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples+1,
+                            dimnames = list(merged_genes$external_gene_name,
+                                            c(colnames(count_matrix), "gene_lengths"))))
+    }
+    
+    # Loop only through merged genes 
+    rows_to_remove <- list()
+    for (i in seq_len(nrow(merged_genes))) {
+      original_ids <- unlist(strsplit(merged_genes$ensembl_ids_to_use[[i]], ';'))
+      
+      # Fast check which IDs exist
+      existing_ids <- original_ids[original_ids %in% available_ids]
+      
+      if (length(existing_ids) > 0) {
+        if (is.null(df_genelengths)) {
+          merged_matrix[i, ] <- colSums(count_matrix[existing_ids, , drop = FALSE])
+        } else {
+          merged_matrix[i, ] <- c(colSums(count_matrix[existing_ids, , drop = FALSE]), 
+                                  sum(df_genelengths$gene_length[match(existing_ids, rownames(df_genelengths))]))
+        }
+      } else {
+        rows_to_remove <- c(rows_to_remove, -i)
+      }
+    }
+    rows_to_remove <- unlist(rows_to_remove)
+    if (length(rows_to_remove) > 0) {
+      merged_matrix <- merged_matrix[rows_to_remove,]
+    }
+    
+    # Combine
+    new_matrix <- rbind(new_matrix, merged_matrix)
+  }
+  
+  # cat("Output:", nrow(new_matrix), "genes x", ncol(new_matrix), "samples\n")
+  
+  return(new_matrix)
+}
 ```
 
 # Objectif
@@ -159,13 +254,44 @@ count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), 
 count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 
 # Working with gene symbols
-count_matrix_genesymbol <- count_matrix
-rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
-count_matrix_pcg_genesymbol <- count_matrix_pcg
-rownames(count_matrix_pcg_genesymbol) <- counts_genes[match(rownames(count_matrix_pcg_genesymbol), rownames(counts_genes), nomatch = 0),'gene_name']
-# duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function)
-count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
-count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+# count_matrix_genesymbol <- count_matrix
+# rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
+# count_matrix_pcg_genesymbol <- count_matrix_pcg
+# rownames(count_matrix_pcg_genesymbol) <- counts_genes[match(rownames(count_matrix_pcg_genesymbol), rownames(counts_genes), nomatch = 0),'gene_name']
+# # duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function)
+# count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
+# count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+mapping <- read.csv("/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Gynet.csv", stringsAsFactors = FALSE)
+count_matrix_genesymbol <- apply_gene_symbol_mapping(
+  count_matrix, 
+  mapping_file = mapping,
+  df_genelengths = counts_genes
+)
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_genesymbol[, count_columns],
+  colData = coldata,
+  design = ~ 1
+)
+dds <- DESeq(dds)
+norm.count_genesymbol <- as.data.frame(counts(dds, normalized=TRUE))
+gene_lengths <- count_matrix_genesymbol$gene_lengths[match(rownames(norm.count_genesymbol), rownames(count_matrix_genesymbol))]
+norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
+
+count_matrix_pcg_genesymbol <- apply_gene_symbol_mapping(
+  count_matrix_pcg, 
+  mapping_file = mapping,
+  df_genelengths = counts_genes
+)
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_pcg_genesymbol[, count_columns],
+  colData = coldata,
+  design = ~ 1
+)
+dds <- DESeq(dds)
+norm.count_pcg_genesymbol <- as.data.frame(counts(dds, normalized=TRUE))
+gene_lengths <- count_matrix_pcg_genesymbol$gene_lengths
+norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
+
 
 coldata <- data.frame(coldata, row.names = count_columns)
 
@@ -207,28 +333,30 @@ boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers 
 
 ```{r purity scores}
 
-# expressions for GSEA: normalised and divided by length
-dds_gene_symbol <- DESeqDataSetFromMatrix(
-  countData = count_matrix_genesymbol,
-  colData = coldata,
-  design = ~ 1
-)
-dds_gene_symbol <- DESeq(dds_gene_symbol)
-norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
-# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
-gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
-norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
+# # before mapping: expressions for GSEA: normalised and divided by length
+# dds_gene_symbol <- DESeqDataSetFromMatrix(
+#   countData = count_matrix_genesymbol,
+#   colData = coldata,
+#   design = ~ 1
+# )
+# dds_gene_symbol <- DESeq(dds_gene_symbol)
+# norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
+# # norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+# gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
+# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
+# 
+# dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
+#   countData = count_matrix_pcg_genesymbol,
+#   colData = coldata,
+#   design = ~ 1
+# )
+# dds_pcg_gene_symbol <- DESeq(dds_pcg_gene_symbol)
+# norm.count_pcg_genesymbol <- as.data.frame(counts(dds_pcg_gene_symbol, normalized=TRUE))
+# # norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_pcg_genesymbol)),'gene_length'])
+# gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_pcg_genesymbol), counts_genes$gene_name)]
+# norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
 
-dds_pcg_gene_symbol <- DESeqDataSetFromMatrix(
-  countData = count_matrix_pcg_genesymbol,
-  colData = coldata,
-  design = ~ 1
-)
-dds_pcg_gene_symbol <- DESeq(dds_pcg_gene_symbol)
-norm.count_pcg_genesymbol <- as.data.frame(counts(dds_pcg_gene_symbol, normalized=TRUE))
-# norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_pcg_genesymbol)),'gene_length'])
-gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_pcg_genesymbol), counts_genes$gene_name)]
-norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
+
 
 # write.table(norm.count_genesymbol_K,"./scripts/Mehlen_Gynet_scripts/norm.count_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
 # write.table(norm.count_pcg_genesymbol_K,"./scripts/Mehlen_Gynet_scripts/norm.count_pcg_genesymbol_K.tsv", row.names = T, col.names = T, sep="\t")
@@ -484,25 +612,32 @@ ggplot(coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
 
 ```
 
-### Déconvolution
 
 ```{r deconvolution}
 
-# MCP-counter
-new_counts_genes <- counts_genes[, count_columns]
-rownames(new_counts_genes) <- sub("\\..*", "", rownames(counts_genes))
-Estimates <- MCPcounter.estimate(new_counts_genes, featuresType = "ENSEMBL_ID")
-heatmap(as.matrix(Estimates),col=colorRampPalette(c("blue","white","red"))(100)) 
-
-# test !
-toto <- matrix(0, nrow = length(count_columns), ncol=1)
-rownames(toto) <- count_columns
-colnames(toto) <- "purity_mcp"
-for (sample in count_columns) {
-     toto[sample, 'purity_mcp'] <- Estimates["Fibroblasts", sample] / sum(Estimates[, sample])
-}
-
-plot(toto, estimate_scores$TumorPurity) # pas du tout de corrélation ! -> demander à Nico quelle ligne de Estimates je dois utiliser
+# # MCP-counter
+# new_counts_genes <- counts_genes[, count_columns]
+# rownames(new_counts_genes) <- sub("\\..*", "", rownames(counts_genes))
+# Estimates <- MCPcounter.estimate(new_counts_genes, featuresType = "ENSEMBL_ID")
+# heatmap(as.matrix(Estimates),col=colorRampPalette(c("blue","white","red"))(100)) 
+# 
+# # test !
+# toto <- matrix(0, nrow = length(count_columns), ncol=1)
+# rownames(toto) <- count_columns
+# colnames(toto) <- "purity_mcp"
+# for (sample in count_columns) {
+#      toto[sample, 'purity_mcp'] <- Estimates["Fibroblasts", sample] / sum(Estimates[, sample])
+# }
+# 
+# # test 2
+# toto <- data.frame(t(Estimates))
+# toto$PUREE <- coldata$Purity_PUREE
+# heatmap(as.matrix(toto),col=colorRampPalette(c("blue","white","red"))(100), scale = "col")
+# # pas vraiment de lien inversé entre purity_PUREE et les valeurs de MCP-counter
+# 
+# 
+# 
+# plot(toto, estimate_scores$TumorPurity) # pas du tout de corrélation ! -> demander à Nico quelle ligne de Estimates je dois utiliser
 
 ```
 

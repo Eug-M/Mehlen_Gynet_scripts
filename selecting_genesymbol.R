@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Strategy for resolution of gene symbols (e.g. for GSEA) which correspond to several Ensembl id in counts_genes, in order of priority:
 # 1. Prefer non-pseudogenes over pseudogenes
 # 2. Prefer genes in keep_biotype over others
@@ -30,10 +34,10 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
   
   # Separate unique and duplicated symbols
   unique_genes <- gene_info_scored %>%
-    filter(n_duplicates == 1)
+    dplyr::filter(n_duplicates == 1)
   
   dup_genes <- gene_info_scored %>%
-    filter(n_duplicates > 1)
+    dplyr::filter(n_duplicates > 1)
   
   cat("Unique gene symbols:", nrow(unique_genes), "\n")
   cat("Duplicated gene symbols:", length(unique(dup_genes$external_gene_name)), "\n")
@@ -72,10 +76,10 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
   
   # Split into resolved and still-tied
   uniquely_resolved <- resolved_dups %>%
-    filter(n_tied == 1, rank == 1)
+    dplyr::filter(n_tied == 1, rank == 1)
   
   still_tied <- resolved_dups %>%
-    filter(n_tied > 1)
+    dplyr::filter(n_tied > 1)
   
   cat("Resolved by criteria:", length(unique(uniquely_resolved$external_gene_name)), 
       "symbols\n")
@@ -96,7 +100,7 @@ create_gene_symbol_mapping <- function(gene_info, keep_biotype, output_file) {
   
   # For uniquely resolved duplicates: one-to-one mapping
   mapping_resolved <- uniquely_resolved %>%
-    filter(rank == 1) %>%
+    dplyr::filter(rank == 1) %>%
     mutate(
       final_gene_id = ensembl_gene_id_version,
       resolution_strategy = "criteria_resolved",
