@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 # Run nextflow without UMIs on Gnomic:
 nextflow run -bg /home/modolo/nf-core-rnaseq_3.21.0/3_21_0/main.nf \
     --input /home/modolo/GyNet/Samples/samplesheet_GyNet.csv \
