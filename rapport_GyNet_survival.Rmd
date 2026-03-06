@@ -282,7 +282,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 
 # Working with gene symbols
@@ -310,12 +310,12 @@ dds_gene_symbol <- DESeqDataSetFromMatrix(
 )
 dds_gene_symbol <- DESeq(dds_gene_symbol)
 norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
-# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[which(counts_genes$gene_name %in% rownames(norm.count_genesymbol)),'gene_length'])
+# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[match(rownames(norm.count_genesymbol), counts_genes$gene_name),'gene_length'])
 gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
 norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
 genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent 
-expression_genes <- norm.count_genesymbol[which(row.names(norm.count_genesymbol) %in% genes_of_interest),]
+expression_genes <- norm.count_genesymbol[match(genes_of_interest, row.names(norm.count_genesymbol)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_gynet[[gene]] <- t_expression_genes[[gene]]

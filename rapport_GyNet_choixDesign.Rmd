@@ -95,12 +95,12 @@ library(conflicted)
 
 # Objectif
 
-Etudier la QC sur les échantillons GyNet, avant recherche de gènes différentiellement exprimés via DESeq2.<br/>
+Rechercher le meilleur design pour la recherche de gènes différentiellement exprimés via DESeq2, sur les échantillons GyNet.<br/>
 
 <br/>
 <br/>
 
-Analyse combinée des 168 samples, puis en séparant par indication : Endo (101 samples) et Cervix (67 samples).<br/>
+Analyse en séparant par indication, et en ne gardant que les samples qui ne sont pas des métastases : Endo (xxx samples) et Cervix (xxx samples).<br/> /!\ à changer !!!
 
 ```{r creating dataframes}
 
@@ -148,7 +148,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 
 count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
 

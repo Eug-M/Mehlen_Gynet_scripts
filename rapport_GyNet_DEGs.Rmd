@@ -154,7 +154,7 @@ gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
 keep_biotype <- c("protein_coding","IG_V_gene","IG_C_gene","IG_J_gene","IG_D_gene","TR_V_gene","TR_J_gene" ,"TR_C_gene","TR_D_gene")
 keep_genes <- gene_info[which(gene_info$gene_type %in% keep_biotype), 'gene_id']
-count_matrix_pcg <- counts_genes[which(rownames(counts_genes) %in% keep_genes), ]
+count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 
 count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
 
@@ -272,10 +272,10 @@ distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 for ( i in 1:3 ) { 
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
-  # matrix_heatmap <- norm.count_list[[design_name]][which(rownames(norm.count_list[[design_name]]) %in% selected_genes_list[[design_name]]),]
+  # matrix_heatmap <- norm.count_list[[design_name]][match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]])),]
   # rownames(matrix_heatmap) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap), rownames(counts_genes))], unique = T)
   genes_ENSG <- row.names(norm.count_list[[design_name]])[match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]]), nomatch = 0)]
-  matrix_heatmap <- norm.count_list[[design_name]][genes_ENSG,]
+  matrix_heatmap <- norm.count_list[[design_name]][match(genes_ENSG, rownames(norm.count_list[[design_name]])),]
   rownames(matrix_heatmap) <- DEGs_gene_symbols
   draw(Heatmap(as.matrix(matrix_heatmap),
                clustering_distance_columns  = "pearson",
@@ -381,7 +381,7 @@ for (i in 1:3) {
   # res <- results(dds, alpha=padj.cutoff, lfcThreshold=lfc.cutoff)
   
   genes_ENSG <- row.names(norm_count)[match(DEGs_in_common_here, rownames(norm_count), nomatch = 0)]
-  matrix_heatmap <- norm_count[genes_ENSG,]
+  matrix_heatmap <- norm_count[match(genes_ENSG, rownames(norm_count)),]
   rownames(matrix_heatmap) <- DEGs_gene_symbols_here
   heatmap.2(as.matrix(matrix_heatmap), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 
@@ -472,10 +472,10 @@ distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 for ( i in 1:3 ) { 
   design_name <- paste0("design_", i)
   DEGs_gene_symbols <- counts_genes$gene_name[match(selected_genes_list[[design_name]], rownames(counts_genes))]
-  # matrix_heatmap <- norm.count_list[[design_name]][which(rownames(norm.count_list[[design_name]]) %in% selected_genes_list[[design_name]]),]
+  # matrix_heatmap <- norm.count_list[[design_name]][match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]])),]
   # rownames(matrix_heatmap) <- make.names(counts_genes$gene_name[match(rownames(matrix_heatmap), rownames(counts_genes))], unique = T)
   genes_ENSG <- row.names(norm.count_list[[design_name]])[match(selected_genes_list[[design_name]], rownames(norm.count_list[[design_name]]), nomatch = 0)]
-  matrix_heatmap <- norm.count_list[[design_name]][genes_ENSG,]
+  matrix_heatmap <- norm.count_list[[design_name]][match(genes_ENSG, row.names(norm.count_list[[design_name]])),]
   rownames(matrix_heatmap) <- DEGs_gene_symbols
   draw(Heatmap(as.matrix(matrix_heatmap),
                clustering_distance_columns  = "pearson",
