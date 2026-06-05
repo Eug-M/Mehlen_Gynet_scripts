@@ -26,6 +26,8 @@ As the ultimate goal will be to choose which variable(s) to include in the DESeq
 
 - rapport_GyNet_4_DEGs.Rmd: study of the DEGs found for both cancers. I first choose the best DESeq2 design based on the heatmaps and Venn diagram, then perform cross-validation (re-run DESeq2 with the same design on all the samples minus one, for each sample) in order to keep only the DEGs validated by at least 75% of the samples. Finally I run the classical bio-informatics study on the DEGs found (ORA - Over-Enrichment Analysis, GSEA - Gene Set Enrichment Analysis).
 
+- rapport_GyNet_UMIs.Rmd: comparison of the genes expressions with or without taking into account the UMIs (Unique Molecular Identifiers) inserted during the sequencing.
+
 - using_puree.sh: Shell commands used to run the Python program PUREE to determine tumor purity in bulk RNA-Seq samples [PUREE: accurate pan-cancer tumor purity estimation from gene expression data](https://www.nature.com/articles/s42003-023-04764-8).
 
 - commands_server.sh: Shell commands used on the lab's secure server (using slurm for distributed computing).
@@ -33,7 +35,7 @@ As the ultimate goal will be to choose which variable(s) to include in the DESeq
 
 ## Sub-project 2: single-cell RNA-Seq data from clinical study (phase Ia) [work in progress]
 
-The files look into the data from .
+The files look into the single-cell RNA-Seq data from a patient with advanced endometrial carcinoma before and after treatment with NP137.
 These data led to the publication of a paper in Nature, before the beginning of my work: [Netrin-1 blockade inhibits tumour growth and EMT features in endometrial cancer](https://www.nature.com/articles/s41586-023-06367-z).
 
 - single_cell_*.R: study the Netrin-1 expression, as well as it main receptors, on the single-cell RNA-Seq sequencing data. The different files are the various steps to process single-cell data. 
