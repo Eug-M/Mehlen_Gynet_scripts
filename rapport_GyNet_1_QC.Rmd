@@ -1,9 +1,3 @@
-<!--
-SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
-
-SPDX-License-Identifier: AGPL-3.0-or-later
--->
-
 ---
 title: "GyNet QC - étude des données avant DESeq2"
 author: "Eugénie Modolo"
@@ -21,6 +15,12 @@ output:
 editor_options:
   chunk_output_type: console
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
 
 ```{r setup, results = "hide", include=F}
 #knitr::opts_chunk$set(echo = TRUE)
@@ -212,7 +212,7 @@ coldata$HR_2 <- case_when(
 # coldata <- subset( coldata, select = - c(xx, xx))
 
 # scale and center the numeric columns
-numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity_Estimate', 'Purity_PUREE', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity_Estimate', 'Purity_PUREE', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned', 'DV200', 'RIN')
 for (numeric_col in numeric_columns) {
   coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
 }
@@ -235,7 +235,7 @@ counts_genes <- counts_genes[rowSums(counts_genes[, count_columns] != 0) > 0, ]
 count_matrix <- as.matrix(counts_genes[, count_columns])
 
 # adding gene length to counts_genes
-txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf",format="gtf")
 # collect the exons per gene id
 exons.list.per.gene <- exonsBy(txdb,by="gene")
 # then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
@@ -244,7 +244,7 @@ match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
 counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
 
 # keeping only the protein-coding genes, as we used a protocol capturing only exons
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -615,13 +615,15 @@ ggplot(coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
 
 ```{r deconvolution}
 
+# MCP-counter ne donne pas d'info sur le % tumoral en tant que tel : PUREE et Estimate devraient suffire
+
 # # MCP-counter
 # new_counts_genes <- counts_genes[, count_columns]
 # rownames(new_counts_genes) <- sub("\\..*", "", rownames(counts_genes))
 # Estimates <- MCPcounter.estimate(new_counts_genes, featuresType = "ENSEMBL_ID")
 # heatmap(as.matrix(Estimates),col=colorRampPalette(c("blue","white","red"))(100)) 
 # 
-# # test !
+# # test 1
 # toto <- matrix(0, nrow = length(count_columns), ncol=1)
 # rownames(toto) <- count_columns
 # colnames(toto) <- "purity_mcp"
@@ -635,9 +637,7 @@ ggplot(coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
 # heatmap(as.matrix(toto),col=colorRampPalette(c("blue","white","red"))(100), scale = "col")
 # # pas vraiment de lien inversé entre purity_PUREE et les valeurs de MCP-counter
 # 
-# 
-# 
-# plot(toto, estimate_scores$TumorPurity) # pas du tout de corrélation ! -> demander à Nico quelle ligne de Estimates je dois utiliser
+# plot(toto, estimate_scores$TumorPurity) # pas du tout de corrélation 
 
 ```
 
@@ -652,7 +652,7 @@ ggplot(coldata, aes(x=Purity_Estimate, y=Purity_PUREE)) +
 rld <- vst(dds, blind=TRUE)
 
 myPalette <- colorRampPalette(rev(brewer.pal(11, "Spectral")))
-to_be_plotted <- c("SampleID", "Indication", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Purity", "Batch", "QC_uniq_aligned")
+to_be_plotted <- c("SampleID", "Indication", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "DV200", "RIN", "Cycles_NP137", "Cycles_pembrolizumab", "Purity_PUREE", "Batch", "QC_uniq_aligned") 
 nber_top_genes <- nrow(count_matrix)
 
 create_myPCAplots <- function(df, column, PCx, PCy, nber_top_genes) {
@@ -929,7 +929,7 @@ assess_variable_contribution <- function(rld, pca, ntop = 500, variables = NULL)
     }
     else {
       # For categorical: ANOVA / calculate eta-squared
-      var_data <- as.factor(var_data)
+      var_data <- base::as.factor(var_data)
       # Skip if only one level
       if (length(levels(var_data)) < 2) next
       # ANOVA for PC1
@@ -1002,7 +1002,7 @@ ggplot(contribution_long, aes(x = reorder(variable, variance_explained),
 assess_variable_pls <- function(coldata, rld, ntop = 500, ncomp = 2) {
   
   # Get expression data
-  rv <- rowVars(assay(rld))
+  rv <- MatrixGenerics::rowVars(assay(rld))
   select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
   X <- t(assay(rld)[select, ])  # Samples x Genes
   # Prepare Y matrix - convert categorical to dummy variables
@@ -1022,7 +1022,7 @@ assess_variable_pls <- function(coldata, rld, ntop = 500, ncomp = 2) {
         Y_list[[var]] <- as.numeric(as.vector(var_data))
     } else {
       # Categorical - convert to dummy variables
-      var_factor <- as.factor(var_data)
+      var_factor <- base::as.factor(var_data)
       if (length(levels(var_factor)) >= 2) {
         # Create dummy variables (one-hot encoding)
         dummy <- model.matrix(~ var_factor - 1)
@@ -1145,7 +1145,7 @@ plot_pls_importance(pls_results)
 calculate_variance_by_ngenes <- function(rld, gene_numbers = seq(100, 2000, by = 100)) {
   
   # Get all gene variances
-  rv <- rowVars(assay(rld))
+  rv <- MatrixGenerics::rowVars(assay(rld))
   results <- data.frame(
     n_genes = integer(),
     variance_explained = numeric()
@@ -1283,7 +1283,7 @@ Légende pour les variables quantitatives : bleu foncé = valeur min, rouge fonc
 ```{r PCA both variants scree plot}
 
 # Calculate PCA of most variant genes
-rv <- rowVars(assay(rld))
+rv <- MatrixGenerics::rowVars(assay(rld))
 select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
 pca <- prcomp(t(assay(rld)[select, ]))
 
@@ -1523,7 +1523,7 @@ boxplot(log10(assays(dds)[["cooks"]]), range=0, las=2, main="Number of outliers 
 rld <- vst(dds, blind=TRUE)
 
 nber_top_genes <- nrow(count_matrix_Endo)
-to_be_plotted <- c("SampleID", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Batch", "ecog", "QC_uniq_aligned", "Purity")
+to_be_plotted <- c("SampleID", "ecog", "Arm", "Site", "Age", "OS", "PFS", "best_response", "Nber_Prior_chemo", "DV200", "RIN", "Cycles_NP137", "Cycles_pembrolizumab", "Purity_PUREE", "Batch", "QC_uniq_aligned")
 
 plot_list <- list()
 for (column in to_be_plotted) {
@@ -1877,7 +1877,7 @@ Légende pour les variables quantitatives : bleu foncé = valeur min, rouge fonc
 ```{r PCA Endo variants scree plot}
 
 # Calculate PCA of most variant genes
-rv <- rowVars(assay(rld))
+rv <- MatrixGenerics::rowVars(assay(rld))
 select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
 pca <- prcomp(t(assay(rld)[select, ]))
 
@@ -2457,7 +2457,7 @@ Légende pour les variables quantitatives : bleu foncé = valeur min, rouge fonc
 ```{r PCA Cervix variants scree plot}
 
 # Calculate PCA of most variant genes
-rv <- rowVars(assay(rld))
+rv <- MatrixGenerics::rowVars(assay(rld))
 select <- order(rv, decreasing = TRUE)[seq_len(min(nber_top_genes, length(rv)))]
 pca <- prcomp(t(assay(rld)[select, ]))
 

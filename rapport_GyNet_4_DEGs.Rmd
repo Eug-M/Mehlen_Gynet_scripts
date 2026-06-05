@@ -1,9 +1,3 @@
-<!--
-SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
-
-SPDX-License-Identifier: AGPL-3.0-or-later
--->
-
 ---
 title: "GyNet DEGs - avec DESeq2"
 author: "Eugénie Modolo"
@@ -22,11 +16,18 @@ editor_options:
   chunk_output_type: console
 ---
 
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 ```{r setup, results = "hide", include=F}
 #knitr::opts_chunk$set(echo = TRUE)
 knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
+# setwd(path)
 knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
@@ -127,7 +128,7 @@ coldata$best_response2 <- case_when(
 # coldata <- subset( coldata, select = - c(xx, xx))
 
 # scale and center the numeric columns
-numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned')
+numeric_columns <- c('Age', 'Weight', 'Height', 'BMI', 'OS', 'PFS', 'Cycles_NP137', 'Cycles_carboplatin', 'Cycles_paclitaxel', 'Cycles_pembrolizumab', 'Purity_Estimate', 'Purity_PUREE', 'CT_perc', 'QC_duplication_perc', 'QC_alignedM_Salmon', 'QC_uniq_aligned', 'RIN', 'DV200')
 for (numeric_col in numeric_columns) {
   coldata[paste0(numeric_col, "_cr")] <- scale(coldata[numeric_col])
 }
@@ -147,8 +148,8 @@ count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
 counts_genes[count_columns] <- round(counts_genes[count_columns])
 #counts_genes <- as.matrix(counts_genes)
 
-# keeping only the protein-coding genes, as we used a protocol capturing only exons (??? à valider auprès de Laurie !)
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+# keeping only the protein-coding genes, as we used a protocol capturing only exons
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -160,7 +161,7 @@ count_matrix <- as.matrix(count_matrix_pcg[, count_columns])
 
 coldata <- data.frame(coldata, row.names = count_columns)
 
-coldata_wo_rep <- subset( coldata, select = -c(Age, Height, Weight, BMI, OS, PFS, Cycles_NP137, Cycles_carboplatin, Cycles_paclitaxel, Cycles_pembrolizumab, Purity, CT_perc, QC_duplication_perc, QC_alignedM_Salmon, QC_uniq_aligned) )
+coldata_wo_rep <- subset( coldata, select = -c(Age, Height, Weight, BMI, OS, PFS, Cycles_NP137, Cycles_carboplatin, Cycles_paclitaxel, Cycles_pembrolizumab, Purity_Estimate, Purity_PUREE, CT_perc, QC_duplication_perc, QC_alignedM_Salmon, QC_uniq_aligned) )
 
 for (col in colnames(coldata_wo_rep)) {
     if (endsWith(col, '_cr')) {

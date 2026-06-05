@@ -1,9 +1,3 @@
-<!--
-SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
-
-SPDX-License-Identifier: AGPL-3.0-or-later
--->
-
 ---
 title: "GyNet Survival - étude de la survie selon l'expression des gènes d'intérêts"
 author: "Eugénie Modolo"
@@ -21,6 +15,13 @@ output:
 editor_options:
   chunk_output_type: console
 ---
+
+<!--
+SPDX-FileCopyrightText: 2026 Eugenie Modolo <eugenie.modolo@lyon.unicancer.fr>
+
+SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+
 
 ```{r setup, results = "hide", include=F}
 #knitr::opts_chunk$set(echo = TRUE)
@@ -94,6 +95,97 @@ library("rtracklayer")
 library("ComplexHeatmap")
 library(circlize)
 library(conflicted)
+
+
+
+apply_gene_symbol_mapping <- function(count_matrix, mapping_file, df_genelengths = NULL) {
+  
+  # cat("=== APPLYING GENE SYMBOL MAPPING TO COUNT MATRIX ===\n\n")
+  
+  # Read mapping if it's a file path
+  if (is.character(mapping_file)) {
+    mapping <- read.csv(mapping_file, stringsAsFactors = FALSE)
+  } else {
+    mapping <- mapping_file
+  }
+  
+  # cat("Mapping contains", nrow(mapping), "gene symbols\n")
+  # cat("Count matrix contains", nrow(count_matrix), "genes\n\n")
+  
+  # gene_name <- mapping$external_gene_name[i] 
+  # Pre-compute which IDs exist in count_matrix 
+  available_ids <- rownames(count_matrix)
+  available_set <- as.list(setNames(rep(TRUE, length(available_ids)), available_ids))
+  
+  # Separate regular and merged
+  # is_merged <- grepl("_merged", mapping$final_gene_id)
+  is_merged <- mapping$resolution_strategy == 'summed'
+  regular_genes <- mapping[!is_merged, ]
+  merged_genes <- mapping[is_merged, ]
+  
+  # Process regular genes 
+  regular_ids_to_keep <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'final_gene_id']
+  # regular_ids_to_keep <- regular_genes$final_gene_id[regular_genes$final_gene_id %in% available_ids]
+  
+  if (is.null(df_genelengths)) {
+    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
+  } else {
+    new_matrix <- as.data.frame(count_matrix[regular_ids_to_keep, , drop = FALSE])
+    new_matrix$gene_lengths <- df_genelengths$gene_length[match(regular_ids_to_keep, rownames(df_genelengths))]
+  }
+  rownames(new_matrix) <- regular_genes[match(available_ids, regular_genes$final_gene_id, nomatch = 0), 'external_gene_name']
+  # rownames(new_matrix) <- regular_genes$external_gene_name[regular_genes$final_gene_id %in% available_ids]
+  
+  # cat("Kept", length(regular_ids_to_keep), "regular genes\n")
+  
+  # Process merged genes (only if they exist)
+  if (nrow(merged_genes) > 0) {
+    # cat("Processing", nrow(merged_genes), "merged genes...\n")
+    
+    # Pre-allocate matrix
+    n_samples <- ncol(count_matrix)
+    if (is.null(df_genelengths)) {
+      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples,
+                            dimnames = list(merged_genes$external_gene_name,
+                                            colnames(count_matrix))))
+    } else {
+      merged_matrix <- as.data.frame(matrix(0, nrow = nrow(merged_genes), ncol = n_samples+1,
+                            dimnames = list(merged_genes$external_gene_name,
+                                            c(colnames(count_matrix), "gene_lengths"))))
+    }
+    
+    # Loop only through merged genes 
+    rows_to_remove <- list()
+    for (i in seq_len(nrow(merged_genes))) {
+      original_ids <- unlist(strsplit(merged_genes$ensembl_ids_to_use[[i]], ';'))
+      
+      # Fast check which IDs exist
+      existing_ids <- original_ids[original_ids %in% available_ids]
+      
+      if (length(existing_ids) > 0) {
+        if (is.null(df_genelengths)) {
+          merged_matrix[i, ] <- colSums(count_matrix[existing_ids, , drop = FALSE])
+        } else {
+          merged_matrix[i, ] <- c(colSums(count_matrix[existing_ids, , drop = FALSE]), 
+                                  sum(df_genelengths$gene_length[match(existing_ids, rownames(df_genelengths))]))
+        }
+      } else {
+        rows_to_remove <- c(rows_to_remove, -i)
+      }
+    }
+    rows_to_remove <- unlist(rows_to_remove)
+    if (length(rows_to_remove) > 0) {
+      merged_matrix <- merged_matrix[rows_to_remove,]
+    }
+    
+    # Combine
+    new_matrix <- rbind(new_matrix, merged_matrix)
+  }
+  
+  # cat("Output:", nrow(new_matrix), "genes x", ncol(new_matrix), "samples\n")
+  
+  return(new_matrix)
+}
 ```
 
 # Objectif
@@ -177,8 +269,8 @@ Cet essai comporte 168 patients, dont 101 pour un cancer de l'endomètre et 67 p
 # coldata_gynet <- clinic_raw[match(samplesheet$sample, clinic_raw$SampleID), c("SampleID", "Indication", "Arm", "Age", "Weight", "Height", "Date_traitement", "Death_status", "OS", "Prog_status", "PFS", "best_response", "Cycles_NP137", "Cycles_carboplatin", "Cycles_paclitaxel", "Cycles_pembrolizumab", "Nber_Prior_chemo", "Mut_Status_endo", "ecog", "Estrogen_endo", "Progesterone_endo")]
 # coldata_gynet = coldata_gynet[order(coldata_gynet$SampleID), ]
 # 
-# # Saving coldata_gynet for further reports (/!\ do NOT run this, I've modified this file afterwards, to add columns)
-# # write.csv(coldata_gynet,"./coldata_GyNet.csv", row.names = F)
+# # Saving coldata_gynet for further reports (/!\ do NOT run this, I've modified this file afterwards, to add QC & purity columns)
+# # write.csv(coldata_gynet,"./coldata_GyNet2.csv", row.names = F)
 
 coldata_gynet <- read.csv('./coldata_GyNet.csv', sep=",")
 coldata_gynet$BMI <- coldata_gynet$Weight / (coldata_gynet$Height)^2
@@ -203,7 +295,7 @@ ggplot(coldata_gynet,
      aes(x=Cycles_NP137, y=factor(Arm, level=level_order), fill=Arm)) + 
      geom_boxplot(notch = TRUE) +
      scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-     geom_jitter(color="black", size=0.4, alpha=0.9) +
+     geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
      ggtitle("Number of cycles of NP137 received") + ylab("Arm") + theme(legend.position="none")
 
 ```
@@ -212,42 +304,6 @@ ggplot(coldata_gynet,
 
 ```{r donnees cliniques GyNet et expression des genes d interet, results='asis', echo=FALSE}
 
-## Ancienne méthode, fausse (pas divisé par taille du gène, genesymbol remplacés par ENSG pas pris en compte dans ssGSEA)
-
-# counts_genes_gynet <- read.table("/home/eugenie-modolo/Documents/Gynet/results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
-#                      header = TRUE, 
-#                      row.names = 1, 
-#                      sep = "\t",
-#                      check.names = FALSE)
-# 
-# count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name"]
-# # besoin de prendre les integers pour DESeq2
-# counts_genes_gynet[count_columns] <- round(counts_genes_gynet[count_columns])
-# count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
-# # rownames(count_matrix_gynet) <- counts_genes_gynet$gene_name  # Gene names become row names
-# 
-# # on modifie tous les noms de gènes dupliqués, en les remplaçant par leur ENSG code, pour que le ssGSEA fonctionne
-# dup_genes <- counts_genes_gynet[duplicated(counts_genes_gynet$gene_name),'gene_name']
-# counts_genes_gynet$feature <- ifelse((is.na(counts_genes_gynet$gene_name) | counts_genes_gynet$gene_name %in% dup_genes), rownames(counts_genes_gynet), counts_genes_gynet$gene_name)
-# count_columns <- colnames(counts_genes_gynet)[colnames(counts_genes_gynet) != "gene_name" & colnames(counts_genes_gynet) != "feature"]
-# count_matrix_gynet <- as.matrix(counts_genes_gynet[, count_columns])
-# rownames(count_matrix_gynet) <- counts_genes_gynet$feature
-# 
-# # normalisation des counts par DESeq2
-# dds_gynet <- DESeqDataSetFromMatrix(
-#   countData = count_matrix_gynet,
-#   colData = coldata_gynet,
-#   design = ~ 1
-# )
-# dds_gynet <- DESeq(dds_gynet)
-# norm.count_gynet <- as.data.frame(counts(dds_gynet, normalized=TRUE))
-
-
-
-
-
-
-
 # countData (gene counts, not transcript's)
 counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.tsv", 
                      header = TRUE, 
@@ -255,10 +311,6 @@ counts_genes <- read.table("./results_rnaseq_NFcore/salmon.merged.gene_counts.ts
                      sep = "\t",
                      check.names = FALSE)
 count_columns <- colnames(counts_genes)[colnames(counts_genes) != "gene_name"]
-# on modifie le gene_name pour les 3 gènes qui sont en doublons pour les 200 gènes d'intérêt Hallmark EMT
-counts_genes[which(row.names(counts_genes)=='ENSG00000291748.1'),'gene_name'] <- 'COL3A1_2' 
-counts_genes[which(row.names(counts_genes)=='ENSG00000276886.4'),'gene_name'] <- 'GREM1_2' 
-counts_genes[which(row.names(counts_genes)=='ENSG00000282049.1'),'gene_name'] <- 'PRSS2_2'
 # we need integers for DESeq2
 counts_genes[count_columns] <- round(counts_genes[count_columns])
 #counts_genes <- as.matrix(counts_genes)
@@ -267,7 +319,7 @@ count_matrix <- as.matrix(counts_genes[, count_columns])
 coldata_gynet <- data.frame(coldata_gynet, row.names = count_columns)
 
 # adding gene length to counts_genes
-txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf",format="gtf")
+txdb <- txdbmaker::makeTxDbFromGFF("/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf",format="gtf")
 # collect the exons per gene id
 exons.list.per.gene <- exonsBy(txdb,by="gene")
 # then for each gene, reduce all the exons to a set of non overlapping exons, calculate their lengths (widths) and sum then
@@ -276,7 +328,7 @@ match_index <- match(rownames(counts_genes), rownames(exonic.gene.sizes))
 counts_genes$gene_length <- exonic.gene.sizes[match_index, 1]
 
 # keeping only the protein-coding genes, as we used a protocol capturing only exons
-gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.chr_patch_hapl_scaff.annotation.gtf')
+gtf <- import('/home/eugenie-modolo/Documents/Reference_files/gencode.v49.primary_assembly.annotation.gtf')
 gtf_df <- as.data.frame(gtf)
 gene_info <- gtf_df[gtf_df$type == "gene", c("gene_id", "gene_type")]
 gene_info <- unique(gene_info)
@@ -286,36 +338,51 @@ count_matrix_pcg <- counts_genes[match(keep_genes, rownames(counts_genes)), ]
 count_matrix_pcg <- as.matrix(count_matrix_pcg[, count_columns])
 
 # Working with gene symbols
-count_matrix_genesymbol <- count_matrix
-rownames(count_matrix_genesymbol) <- counts_genes$gene_name  # Gene names become row names
-count_matrix_pcg_genesymbol <- count_matrix_pcg
-rownames(count_matrix_pcg_genesymbol) <- counts_genes[match(rownames(count_matrix_pcg_genesymbol), rownames(counts_genes), nomatch = 0),'gene_name']
-# duplicated gene symbols: /!\ we make the sum of their raw counts (hypothesis: they code for the same protein function ...)
-count_matrix_genesymbol <- rowsum(count_matrix_genesymbol, rownames(count_matrix_genesymbol))
-count_matrix_pcg_genesymbol <- rowsum(count_matrix_pcg_genesymbol, rownames(count_matrix_pcg_genesymbol))
+mapping <- read.csv("/home/eugenie-modolo/Documents/Reference_files/gene_symbol_mapping_Lapnet.csv", stringsAsFactors = FALSE)
+# count_matrix_genesymbol <- apply_gene_symbol_mapping(
+#   count_matrix, 
+#   mapping_file = mapping,
+#   df_genelengths = counts_genes
+# )
+# dds <- DESeqDataSetFromMatrix(
+#   countData = count_matrix_genesymbol[, count_columns],
+#   colData = coldata_gynet,
+#   design = ~ 1
+# )
+# dds <- DESeq(dds)
+# norm.count_genesymbol <- as.data.frame(counts(dds, normalized=TRUE))
+# gene_lengths <- count_matrix_genesymbol$gene_lengths[match(rownames(norm.count_genesymbol), rownames(count_matrix_genesymbol))]
+# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
+count_matrix_pcg_genesymbol <- apply_gene_symbol_mapping(
+  count_matrix_pcg, 
+  mapping_file = mapping,
+  df_genelengths = counts_genes
+)
+dds <- DESeqDataSetFromMatrix(
+  countData = count_matrix_pcg_genesymbol[, count_columns],
+  colData = coldata_gynet,
+  design = ~ 1
+)
+dds <- DESeq(dds)
+norm.count_pcg_genesymbol <- as.data.frame(counts(dds, normalized=TRUE))
+gene_lengths <- count_matrix_pcg_genesymbol$gene_lengths
+norm.count_pcg_genesymbol_K <- as.matrix(norm.count_pcg_genesymbol/gene_lengths)
+
+# expressions for GSEA: normalised and divided by length
 dds <- DESeqDataSetFromMatrix(
   countData = count_matrix,
   colData = coldata_gynet,
   design = ~ 1
 )
 dds <- DESeq(dds)
-norm.count_gynet <- as.data.frame(counts(dds, normalized=TRUE))
+norm.count <- as.data.frame(counts(dds, normalized=TRUE))
+gene_lengths <- counts_genes$gene_length[match(rownames(norm.count), rownames(counts_genes))]
+norm.count_K <- as.matrix(norm.count/gene_lengths)
 
-# expressions for GSEA: normalised and divided by length
-dds_gene_symbol <- DESeqDataSetFromMatrix(
-  countData = count_matrix_genesymbol,
-  colData = coldata_gynet,
-  design = ~ 1
-)
-dds_gene_symbol <- DESeq(dds_gene_symbol)
-norm.count_genesymbol <- as.data.frame(counts(dds_gene_symbol, normalized=TRUE))
-# norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/counts_genes[match(rownames(norm.count_genesymbol), counts_genes$gene_name),'gene_length'])
-gene_lengths <- counts_genes$gene_length[match(rownames(norm.count_genesymbol), counts_genes$gene_name)]
-norm.count_genesymbol_K <- as.matrix(norm.count_genesymbol/gene_lengths)
 
-genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent 
-expression_genes <- norm.count_genesymbol[match(genes_of_interest, row.names(norm.count_genesymbol)),]
+genes_of_interest <- c('NTN1', 'NEO1', 'UNC5B', 'UNC5A', 'UNC5C', 'UNC5D', 'DCC', 'MCAM', 'ADORA2B', 'DSCAM', 'APP', 'RGMA', 'RGMB', 'EPCAM', 'VIM') # 'RGMC' non présent dans le fichier de gene counts
+expression_genes <- norm.count_pcg_genesymbol[match(genes_of_interest, row.names(norm.count_pcg_genesymbol)),]
 t_expression_genes <- data.frame(t(expression_genes))
 for (gene in genes_of_interest) {
   coldata_gynet[[gene]] <- t_expression_genes[[gene]]
@@ -352,7 +419,7 @@ create_gene_histograms <- function(gene_name, df1) {
   p3 <- ggplot(df1, aes(x = Arm, y=.data[[gene_log]], fill=Arm)) + 
   geom_boxplot(notch = TRUE, outlier.shape = NA) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   # theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste0("log2(", gene_name, "+1) GyNet per arm")) 
@@ -360,7 +427,7 @@ create_gene_histograms <- function(gene_name, df1) {
   p4 <- ggplot(df1, aes(x = Arm, y=.data[[gene_name]], fill=Arm)) + 
   geom_boxplot(notch = TRUE, outlier.shape = NA) +
   scale_fill_viridis(discrete = TRUE, alpha=0.6) +
-  geom_jitter(color="black", size=0.4, alpha=0.9) +
+  geom_jitter(position=position_jitterdodge(dodge.width=0.9), size=0.4) +
   theme_bw()+ 
   # theme(axis.text.x = element_text(angle=-40, hjust=.1)) +
   ggtitle(paste0(gene_name, "GyNet per arm")) 
@@ -383,7 +450,8 @@ create_gene_histograms <- function(gene_name, df1) {
 for (gene in genes_of_interest) {
   cat("### ", gene, " \n\n")
   res <- create_gene_histograms(gene, coldata_gynet)
-  print(grid.arrange(res$plot1, res$plot2, res$plot3, res$plot4, res$plot5, res$plot6, nrow = 3))
+  # print(grid.arrange(res$plot1, res$plot2, res$plot3, res$plot4, res$plot5, res$plot6, nrow = 3))
+  print(grid.arrange(res$plot1, res$plot2, res$plot3, nrow = 2))
   cat("\n\n")
 }
 
@@ -1078,7 +1146,7 @@ list_genes_ssgsea_Hallmark <- list(list_genes_Hallmark, "")
 names(list_genes_ssgsea_Hallmark) <- c("EMT", "")
 
 # Hallmark_score pour GyNet
-gsvaparams <- gsvaParam(as.matrix(norm.count_genesymbol_K),
+gsvaparams <- gsvaParam(as.matrix(norm.count_pcg_genesymbol_K),
                         list_genes_ssgsea_Hallmark)
 result_gsva <- gsva(gsvaparams)
 scores_EMT <- result_gsva[1,]
@@ -1165,7 +1233,7 @@ Etude du heatmap selon les 200 gènes Hallmark :
 #   theme_bw()+ 
 #   theme(axis.text.x = element_text(angle=-40, hjust=.1))
 
-matrix_heatmap_200 <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Hallmark),]
+matrix_heatmap_200 <- norm.count_pcg_genesymbol_K[which(row.names(norm.count_pcg_genesymbol_K) %in% list_genes_Hallmark),]
 
 # cluster colors 
 Indication_col <- c("turquoise","orangered")
@@ -1210,8 +1278,8 @@ list_genes_E <- tmp[which(tmp$Type == 'E'), 'gene_name']
 list_genes_Mak <- c(list_genes_M, list_genes_E)
 
 # Mak score gynet
-expression_genes_M <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_M),]
-expression_genes_E <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_E),]
+expression_genes_M <- norm.count_pcg_genesymbol_K[which(row.names(norm.count_pcg_genesymbol_K) %in% list_genes_M),]
+expression_genes_E <- norm.count_pcg_genesymbol_K[which(row.names(norm.count_pcg_genesymbol_K) %in% list_genes_E),]
 # data.frame(t(expression_genes_M))
 coldata_gynet$Mak_score <- NA
 coldata_gynet$E_score <- NA
@@ -1295,7 +1363,7 @@ Etude du heatmap selon les 77 gènes Mak :
 ## Ancienne méthode
 # # distcor <- function(m){ as.dist(1-cor(t(m))  ) }
 # 
-matrix_heatmap_77 <- norm.count_genesymbol_K[which(row.names(norm.count_genesymbol_K) %in% list_genes_Mak),]
+matrix_heatmap_77 <- norm.count_pcg_genesymbol_K[which(row.names(norm.count_pcg_genesymbol_K) %in% list_genes_Mak),]
 # hm <- heatmap.2(as.matrix(log2(expression_genes_77_gynet+1)), distfun = distcor, hclustfun = function(d)hclust(d,method="ward.D2"), scale="row", trace="none", dendrogram="both",  col = colorRampPalette(rev(brewer.pal(9, "RdBu")))(50))
 # 
 # target <- colnames(expression_genes_77_gynet)[hm$colInd]
@@ -1339,17 +1407,17 @@ draw(h)
 # Conclusions
 
 Concernant les expressions :<br/>
-- tous les échantillons expriment la netrine et la plupart de ses récepteurs (i.e. pas d'échantillons à zéro) : c'est nettement différent des échantillons de lapnet ;<br/>
+- tous les échantillons expriment la netrine et la plupart de ses récepteurs (i.e. pas d'échantillons à zéro) : c'est nettement différent des échantillons de LapNet ;<br/>
 - on voit un décalage dans les expressions entre Endo et Cervix, ce qui n'est pas illogique étant donné qu'il s'agit de tissus différents, mais à prendre en compte dans la comparaison entre ces deux indications.<br/>
 <br/>
 Concernant les survies : <br/>
 - le bras C des deux indications a été arrêté prématurément, car les réponses étaient nettement moins bonnes : cela se retrouve sur les 2 courbes de PFS par bras ;<br/>
 - l'expression de NTN1 dans les échantillons n'est pas prédictive de la différence de réponse entre les bras avec NP137 (B, C, D) et le bras contrôle (A), voire semble aller dans le mauvais sens pour Endo (mais ceci est probablement dû à la mauvaise répartition d'individus RH+ entre les bras randomisés pour cette indication) ;<br/>
 - pour la survie selon le niveau d'expression des gènes d'intérêt : <br/>
-  - effet positif sur la survie constaté pour : NTN1 (OS Cervix), UNC5A (PFS Endo), UNC5B (OS & PFS Endo), UNC5D (PFS Cervix), DSCAM (PFS Cervix), RGMA (PFS Endo) ;<br/>
-  - pas d'effet constaté sur la survie pour : UNC5C, DCC, MCAM, ADORA2B, APP, RGMB ;<br/>
-  - effet négatif sur la survie constaté pour NEO1 (OS & PFS Cervix), ce qui est l'inverse de lapnet ... ;<br/>
-  - attention, en faisant une correction de Bonferroni sur la p-value (multiplication par 13 gènes testés), aucune p-value ne reste significative (sachant qu'elles l'étaient déjà très peu au départ).<br/>
+  - effet positif sur la survie constaté pour : NTN1 (OS Cervix), UNC5B (OS & PFS Endo), UNC5C (OS & PFS Endo), UNC5D (PFS Cervix), ADORA2B (PFS Endo), DSCAM (PFS Cervix - padj significative !), RGMA (PFS Endo), RGMB (OS Endo - padj significative !) ;<br/>
+  - pas d'effet constaté sur la survie pour : UNC5A, DCC, MCAM ;<br/>
+  - effet négatif sur la survie constaté pour : NEO1 (OS Cervix, ce qui est l'inverse de LapNet ...), et APP (PFS Endo) ;<br/>
+  - attention, en faisant une correction de Bonferroni sur la p-value (multiplication par 13 gènes testés), presque aucune p-value ne reste significative (sachant qu'elles l'étaient déjà très peu au départ).<br/>
 <br/>
 Remarques générales : <br/>
 - les données patients sont assez différentes entre Endo et Cervix, c'est pour cette raison que les deux populations sont séparées dans la plupart des graphiques ;<br/>
