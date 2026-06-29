@@ -24,7 +24,7 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 ```{r setup, results = "hide", include=F}
 #knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', out.width='100%', cache = F)
+knitr::opts_chunk$set(echo=FALSE, eval=TRUE, message=FALSE, warning=FALSE, fig.align='center', fig.width = 5, fig.height = 4, out.width='100%', dpi = 150, cache = F)
 
 path <- "/home/eugenie-modolo/Documents/Gynet/"
 # setwd(path)
@@ -32,6 +32,22 @@ knitr::opts_knit$set(root.dir = path)
 
 # WKDIR <- paste0(path,"/DE_analysis")
 # setwd(WKDIR)
+
+# Use Arial for the figures (downloaded with: apt-get install ttf-mscorefonts-installer)
+library(showtext)
+font_add("Arial", regular = "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf")  # path vary by OS
+showtext_auto()
+showtext_opts(dpi = 150)   # match dpi above, critical for showtext sizing
+# Set globally for all ggplot2 figures
+library(ggplot2)
+theme_set(theme_minimal(base_family = "Arial", base_size = 9))  
+# Set globally for all base plots
+knitr::knit_hooks$set(set_par = function(before, options, envir) {
+  if (before) {
+    par(family = "Arial", cex = 0.7)
+  }
+})
+knitr::opts_chunk$set(set_par = TRUE)
 ```
 
 ```{r report colors, results = "hide"}

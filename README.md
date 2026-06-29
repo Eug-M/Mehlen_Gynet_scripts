@@ -22,7 +22,7 @@ As the ultimate goal will be to choose which variable(s) to include in the DESeq
 
 - rapport_GyNet_2_survival.Rmd: study of the link between expression of Netrin-1, and its 15 main known receptors as well as global EMT (Epithelial-Mesenchymal Transition) levels, and the patients' survival (OS & PFS). The influence of the clinical trial's arm on the patient's survival is also studied at length (espacially arm A, which is the only one that did not receive NP137 treatment). This study notably uses Kaplan-Meier and ssGSEA statistical tests. 
 
-- rapport_GyNet_3_choixDesign.Rmd: In addition to the PLS studies performed in the file rapport_GyNet_1_QC.Rmd, I performed here LRT (Likelihood Ratio Tests) with DESeq2 on the two different cancers (cervix and entrometrium), in order to automatically choose (i) the variable of interest as several clinical variables could be used to indicate survival; (ii) the best variables to include in the design to explain the noise in the data, so that more DEGs (Differentially-Expressed Genes) could be found.
+- rapport_GyNet_3_choixDesign.Rmd: in addition to the PLS studies performed in the file rapport_GyNet_1_QC.Rmd, I performed here LRT (Likelihood Ratio Tests) with DESeq2 on the two different cancers (cervix and entrometrium), in order to automatically choose (i) the variable of interest as several clinical variables could be used to indicate survival; (ii) the best variables to include in the design to explain the noise in the data, so that more DEGs (Differentially-Expressed Genes) could be found.
 
 - rapport_GyNet_4_DEGs.Rmd: study of the DEGs found for both cancers. I first choose the best DESeq2 design based on the heatmaps and Venn diagram, then perform cross-validation (re-run DESeq2 with the same design on all the samples minus one, for each sample) in order to keep only the DEGs validated by at least 75% of the samples. Finally I run the classical bio-informatics study on the DEGs found (ORA - Over-Enrichment Analysis, GSEA - Gene Set Enrichment Analysis).
 
@@ -38,5 +38,5 @@ As the ultimate goal will be to choose which variable(s) to include in the DESeq
 The files look into the single-cell RNA-Seq data from a patient with advanced endometrial carcinoma before and after treatment with NP137.
 These data led to the publication of a paper in Nature, before the beginning of my work: [Netrin-1 blockade inhibits tumour growth and EMT features in endometrial cancer](https://www.nature.com/articles/s41586-023-06367-z).
 
-- single_cell_*.R: study the Netrin-1 expression, as well as it main receptors, on the single-cell RNA-Seq sequencing data. The different files are the various steps to process single-cell data. 
+- single_cell_*.R: study of the Netrin-1 expression, as well as it main receptors, on the single-cell RNA-Seq sequencing data. The different files are the various steps to process single-cell data. 
 
